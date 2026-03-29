@@ -6,6 +6,10 @@
 class RobustLinearRegression
 {
 
+//TODO implement calss RobustRegressionResult
+//TODO implement enum class RobustRegressionStatus
+//TODO return fit result as std::expected<RobustRegressionResult, RobustRegressionStatus> or something like this to be able to return error status in case of failure
+
 public:
     RobustLinearRegression(float outlierThreshold, float outlierProbability);
 
@@ -21,7 +25,7 @@ public:
 
 
 private:
-    float m_slope{0.0f};
+    float m_slope{1.0f};
     float m_intercept{0.0f};
     float m_inlierRatio{0.0f};
     float m_rmse{0.0f};

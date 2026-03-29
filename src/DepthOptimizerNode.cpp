@@ -1,8 +1,6 @@
 #include "depth_optimizer/DepthOptimizerNode.hpp"
 #include "depth_optimizer/msg/object_data.hpp"
-
-
-
+#include "depth_optimizer/DepthMapOptimizationProblem.h"
 
 #include <geometry_msgs/msg/point32.hpp>
 
@@ -42,9 +40,10 @@ DepthOptimizerNode::DepthOptimizerNode(): Node("depth_optimizer_node")
     RCLCPP_INFO(this->get_logger(), "The number of opencv threads has been set to %d", cv::getNumThreads());
     cv::parallel::setParallelForBackend(std::make_shared<cv::parallel::tbb::ParallelForBackend>());
 
+    const auto outlierThreshold{0.2f}; 
+    const auto outlierProbability{0.5f}; 
 
-
-    m_robustLinearRegression = std::make_unique<RobustLinearRegression>(0.2f, 0.5f);
+    m_robustLinearRegression = std::make_unique<RobustLinearRegression>(outlierThreshold, outlierProbability);
 
 }
 
@@ -59,38 +58,40 @@ void DepthOptimizerNode::objectDataCallback(const depth_optimizer::msg::ObjectDa
 
     //getting depth values from depth map for map points with corresponding 2D points in image
 
-    //cv::MatXf 
+    //const auto numberOfMapPoints{msg->sparse_depth_information.points.size()};
 
-    const auto numberOfMapPoints{msg->sparse_depth_information.points.size()};
+    //TODO: probably there is no need to interpolate depth values for depth map, there would be no significant accuracy improvement.
+    //TODO: implement direct retrieval of depth values from depth map.
 
-    std::vector<float> coordinatesX(numberOfMapPoints,0.0f);
-    std::vector<float> coordinatesY(numberOfMapPoints,0.0f);
-    std::vector<float> depthValuesFromSparseMap(numberOfMapPoints,0.0f);
+    auto isInValidRange = [&msg](const auto& point)
+    {
+        return point.x >= msg->depth_map_col_min && point.x < msg->depth_map_col_max && point.y >= msg->depth_map_row_min && point.y < msg->depth_map_row_max;
+    };
 
-    RCLCPP_INFO(this->get_logger(), "Number of map points: %ld objects", coordinatesX.size());
-    
-    //(std::execution::par
     auto timeStartT = clock::now();
-    std::transform( msg->sparse_depth_information.points.begin(), msg->sparse_depth_information.points.end(), coordinatesX.begin(), [](const auto& point){return point.x;} );
-    std::transform( msg->sparse_depth_information.points.begin(), msg->sparse_depth_information.points.end(), coordinatesY.begin(), [](const auto& point){return point.y;} );
-    std::transform( msg->sparse_depth_information.points.begin(), msg->sparse_depth_information.points.end(), depthValuesFromSparseMap.begin(), [](const auto& point){return point.z;} );
+
+    auto coordinatesX = msg->sparse_depth_information.points | std::views::filter(isInValidRange) | std::views::transform([](const auto& point){return point.x;}) | std::ranges::to<std::vector<float>>();
+    auto coordinatesY = msg->sparse_depth_information.points | std::views::filter(isInValidRange) | std::views::transform([](const auto& point){return point.y;}) | std::ranges::to<std::vector<float>>();
+    auto depthValuesFromSparseMap = msg->sparse_depth_information.points | std::views::filter(isInValidRange) | std::views::transform([](const auto& point){return point.z;}) | std::ranges::to<std::vector<float>>();
+
+    const auto numberOfValidMapPoints{depthValuesFromSparseMap.size()};
+
     auto timeEndT = clock::now();
-    auto durationT = std::chrono::duration_cast<std::chrono::nanoseconds>(timeEndT - timeStartT).count();
-    RCLCPP_INFO(this->get_logger(), "Transformed sparse depth information points in %ld nanoseconds", durationT);
+    auto durationT = std::chrono::duration_cast<std::chrono::microseconds>(timeEndT - timeStartT).count();
+    RCLCPP_INFO(this->get_logger(), "Transformed sparse depth information points in %ld microseconds", durationT);
 
-    cv::Mat depth_map(msg->rows, msg->columns, CV_32FC1, msg->depth_map_left_row_major.data());
+    cv::Mat depthMap(msg->rows, msg->columns, CV_32FC1, msg->depth_map_left_row_major.data());
 
-    cv::Mat mapX(1, numberOfMapPoints, CV_32FC1, coordinatesX.data());
-    cv::Mat mapY(1, numberOfMapPoints, CV_32FC1, coordinatesY.data());
+    cv::Mat mapX(1, numberOfValidMapPoints, CV_32FC1, coordinatesX.data());
+    cv::Mat mapY(1, numberOfValidMapPoints, CV_32FC1, coordinatesY.data());
 
-    std::vector<float> depthValuesFromDepthMap(numberOfMapPoints,0.0f);
-    cv::Mat depthValuesWrapper(1, numberOfMapPoints, CV_32FC1, depthValuesFromDepthMap.data());
+    std::vector<float> depthValuesFromDepthMap(numberOfValidMapPoints,0.0f);
+    cv::Mat depthValuesWrapper(1, numberOfValidMapPoints, CV_32FC1, depthValuesFromDepthMap.data());
 
     auto timeStartRemap = clock::now();
-    cv::remap(depth_map, depthValuesWrapper, mapX, mapY, cv::INTER_NEAREST, cv::BORDER_CONSTANT, 0.0f);
+    cv::remap(depthMap, depthValuesWrapper, mapX, mapY, cv::INTER_NEAREST, cv::BORDER_CONSTANT, 0.0f);
     auto timeEndRemap = clock::now();
     auto durationRemap = std::chrono::duration_cast<std::chrono::microseconds>(timeEndRemap - timeStartRemap).count();
-
     RCLCPP_INFO(this->get_logger(), "Retrieved depth values from depth map in %ld microseconds", durationRemap);
 
     //std::for_each(depthValuesFromDepthMap.begin(), depthValuesFromDepthMap.end(), [](const auto& depthValue){
@@ -115,8 +116,30 @@ void DepthOptimizerNode::objectDataCallback(const depth_optimizer::msg::ObjectDa
         m_robustLinearRegression->getRmse()
     );
 
+    if (m_robustLinearRegression->getRmse() > 0.5f) //TODO find a good threshold for rmse to decide when to apply linear correction, also test if this is needed at all, maybe we can just always apply linear correction
+    {
+        RCLCPP_WARN(this->get_logger(), "High RMSE for robust linear regression fit: %f. Consider not applying linear correction to depth map.", m_robustLinearRegression->getRmse());
+        RCLCPP_WARN(this->get_logger(), "Depth values from sparse map and depth map might be significantly different");  
+        return;
+    }
 
-    cv::Mat depthMapAfterLinearCorrection = depth_map * m_robustLinearRegression->getSlope() + m_robustLinearRegression->getIntercept();
+    cv::Mat depthMapToOptmize;
+    depthMap.convertTo(depthMapToOptmize, CV_64F);
+    
+    DepthMapOptimizationProblem depthMapOptimizationProblem(
+        depthMapToOptmize,
+        DepthMapOptimizationRoi{msg->depth_map_row_min, msg->depth_map_row_max, msg->depth_map_col_min, msg->depth_map_col_max},
+        static_cast<double>(1.0/m_robustLinearRegression->getSlope()),
+        4
+    );
+
+
+    depthMapOptimizationProblem.fillOptimizationProblem(msg->sparse_depth_information.points);
+    depthMapOptimizationProblem.solve();
+
+    RCLCPP_INFO(this->get_logger(), "Slope after optimization: %f", 1.0/depthMapOptimizationProblem.getSlope());
+
+    cv::Mat depthMapAfterLinearCorrection = depthMap * m_robustLinearRegression->getSlope() + m_robustLinearRegression->getIntercept();
  
     auto timeStartTransformation = clock::now();
 
@@ -149,7 +172,7 @@ void DepthOptimizerNode::objectDataCallback(const depth_optimizer::msg::ObjectDa
         m_ones = cv::Mat::ones(msg->rows, msg->columns, CV_32F);
     }
 
-    RCLCPP_INFO(this->get_logger(), "Focal length for left camera is: %f %f", msg->focal_lenght_left[0], msg->focal_lenght_left[1]);
+    //RCLCPP_INFO(this->get_logger(), "Focal length for left camera is: %f %f", msg->focal_lenght_left[0], msg->focal_lenght_left[1]);
 
     cv::Mat cameraFrameCoordinatesX;
     cv::Mat cameraFrameCoordinatesY;
@@ -193,15 +216,15 @@ void DepthOptimizerNode::objectDataCallback(const depth_optimizer::msg::ObjectDa
     cv::Mat transformationMatrix = cv::Mat(quaternion.toRotMat4x4());
     transformationMatrix.convertTo(transformationMatrix, CV_32F);
 
-    std::cout << "Transformation matrix: \n" << transformationMatrix << std::endl;
+    //std::cout << "Transformation matrix: \n" << transformationMatrix << std::endl;
     transformationMatrix.at<float>(0,3) = static_cast<float>(msg->pose.pose.position.x);
     transformationMatrix.at<float>(1,3) = static_cast<float>(msg->pose.pose.position.y);
     transformationMatrix.at<float>(2,3) = static_cast<float>(msg->pose.pose.position.z);
     transformationMatrix.convertTo(transformationMatrix, CV_32F);
 
-    std::cout << "Transformation matrix: \n" << transformationMatrix << std::endl;
+    //std::cout << "Transformation matrix: \n" << transformationMatrix << std::endl;
 
-
+    /*
     auto timeStartMatrixMultiplicationEigen = clock::now(); 
     Eigen::Map<Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> transformationMarixEigen(transformationMatrix.ptr<float>(), transformationMatrix.rows, transformationMatrix.cols);
     Eigen::Map<Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> points4xNEigen(points4xN.ptr<float>(), points4xN.rows, points4xN.cols);
@@ -209,7 +232,7 @@ void DepthOptimizerNode::objectDataCallback(const depth_optimizer::msg::ObjectDa
     auto timeEndMatrixMultiplicationEigen = clock::now();
     auto durationMatrixMultiplicationEigen = std::chrono::duration_cast<std::chrono::microseconds>(timeEndMatrixMultiplicationEigen - timeStartMatrixMultiplicationEigen).count();
     RCLCPP_INFO(this->get_logger(), "Matrix multiplication with Eigen took %ld microseconds", durationMatrixMultiplicationEigen);
-
+    */
 
 
     auto timeStartMatrixMultiplication= clock::now();
@@ -220,14 +243,14 @@ void DepthOptimizerNode::objectDataCallback(const depth_optimizer::msg::ObjectDa
 
 
 
-    cv::Mat coordinateInWorldAs4Channels = points4xNTransformed.reshape(4).reshape(4, msg->rows);
+    cv::Mat coordinatesInWorldAs4Channels = points4xNTransformed.reshape(4).reshape(4, msg->rows);
 
     cv::Rect roi(msg->depth_map_col_min, msg->depth_map_row_min, msg->depth_map_col_max - msg->depth_map_col_min, msg->depth_map_row_max - msg->depth_map_row_min);
 
-    cv::Mat coordinateInWorldAs4ChannelsCroped = coordinateInWorldAs4Channels(roi).clone();
+    cv::Mat coordinatesInWorldAs4ChannelsCroped = coordinatesInWorldAs4Channels(roi).clone();
     cv::Mat imageSegmentedByObjectIdsCroped = imageSegmentedByObjectIds(roi).clone();
 
-    RCLCPP_INFO(this->get_logger(), "Cropped coordinate matrix is of size: rows=%d, cols=%d", coordinateInWorldAs4ChannelsCroped.rows, coordinateInWorldAs4ChannelsCroped.cols);
+    RCLCPP_INFO(this->get_logger(), "Cropped coordinate matrix is of size: rows=%d, cols=%d", coordinatesInWorldAs4ChannelsCroped.rows, coordinatesInWorldAs4ChannelsCroped.cols);
     RCLCPP_INFO(this->get_logger(), "Image segmented by object IDs size: rows=%d, cols=%d", imageSegmentedByObjectIdsCroped.rows, imageSegmentedByObjectIdsCroped.cols);
 
     std::vector<std::vector<geometry_msgs::msg::Point32>> pointsPerObject(numberOfObjects);
@@ -235,7 +258,7 @@ void DepthOptimizerNode::objectDataCallback(const depth_optimizer::msg::ObjectDa
 
     for (auto pointCloud: pointsPerObject)
     {
-        pointCloud.reserve(500000); //Preallocate space for 10k points per object class
+        pointCloud.reserve(500000); //Preallocate space for points
     }
 
     for (int r = 0; r < imageSegmentedByObjectIdsCroped.rows; ++r)
@@ -252,7 +275,7 @@ void DepthOptimizerNode::objectDataCallback(const depth_optimizer::msg::ObjectDa
             const auto objectClassIndex = row_ptr[c] - 1; //Assuming class IDs start from 1
 
             geometry_msgs::msg::Point32 point;
-            const auto& pointInWorld = coordinateInWorldAs4ChannelsCroped.at<cv::Vec4f>(r,c);
+            const auto& pointInWorld = coordinatesInWorldAs4ChannelsCroped.at<cv::Vec4f>(r,c);
             point.x = pointInWorld[0];
             point.y = pointInWorld[1];
             point.z = pointInWorld[2];

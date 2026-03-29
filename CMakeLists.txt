@@ -15,6 +15,7 @@ find_package(geometry_msgs REQUIRED)
 find_package(cv_bridge REQUIRED)
 find_package(OpenCV REQUIRED)
 find_package(Eigen3 3.4 REQUIRED)
+find_package(Ceres 2.1 REQUIRED)
 find_package(TBB REQUIRED)
 # uncomment the following section in order to fill in
 # further dependencies manually.
@@ -44,7 +45,9 @@ ament_export_dependencies(rosidl_default_runtime)
 add_executable(depth_optimizer_node
 src/depth_optimizer.cpp
 src/RobustLinearRegression.cpp
-src/DepthOptimizerNode.cpp)
+src/DepthOptimizerNode.cpp
+src/DepthMapOptimizationProblem.cpp
+)
 
 ament_target_dependencies(depth_optimizer_node
  rclcpp
@@ -54,10 +57,12 @@ ament_target_dependencies(depth_optimizer_node
  geometry_msgs
  cv_bridge
  OpenCV
- Eigen3)
+ Eigen3
+ Ceres)
 
  target_link_libraries(depth_optimizer_node TBB::tbb)
  target_link_libraries(depth_optimizer_node Eigen3::Eigen)
+ target_link_libraries(depth_optimizer_node Ceres::ceres)
 
 
  target_include_directories(depth_optimizer_node PUBLIC

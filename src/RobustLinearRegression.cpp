@@ -58,7 +58,7 @@ void RobustLinearRegression::fit(const std::vector<float>& x, const std::vector<
     std::vector<RegressionResult> regressionResults(m_numberOfAttempts, RegressionResult{});
     std::ranges::transform(samples, regressionResults.begin(), comuteRegressionForMinimalSample);
 
-    BestSampleResult bestResult(0, 0, std::vector<InlierId>() );
+    
     
     const auto outlierThreshold{m_outlierThreshold};
 
@@ -91,6 +91,8 @@ void RobustLinearRegression::fit(const std::vector<float>& x, const std::vector<
         return inlierIndices;
     };
 
+
+    BestSampleResult bestResult(0, 0, std::vector<InlierId>() );
     auto numberOfGoodSmaplsFound{0};
     for (auto sampleId = 0; sampleId<m_numberOfAttempts; ++sampleId)
     {
@@ -115,18 +117,19 @@ void RobustLinearRegression::fit(const std::vector<float>& x, const std::vector<
         {
             break;
         }
-   
     }
 
     auto timeEndRansac = clock::now();
     auto durationRansac = std::chrono::duration_cast<std::chrono::microseconds>(timeEndRansac - timeStartRansac).count();
     std::cout << "RANSAC fitting took " << durationRansac << " microseconds\n";
 
-    //std::cout << "Best sample ID: " << std::get<0>(bestResult) << ", number of inliers: " << std::get<1>(bestResult) << " ,inlier ratio: " << static_cast<float>(std::get<1>(bestResult))/static_cast<float>(numberOfPoints) << "\n";
 
 
     auto timeStartOptimization = clock::now();
     const auto& [bestSampleId, numberOfInliers, inlierIndices]{bestResult};
+
+
+    const auto [bestSlopeSoFar, bestInterceptSoFar]{regressionResults.at(bestSampleId)};
     std::vector<float> xInliers;
     std::vector<float> yInliers;
     xInliers.reserve(numberOfInliers);
@@ -136,6 +139,7 @@ void RobustLinearRegression::fit(const std::vector<float>& x, const std::vector<
         xInliers.push_back(x[inlierId]);
         yInliers.push_back(y[inlierId]);
     }
+
     //final fit using all inliers:
 
     const auto sumXSquared = std::transform_reduce(xInliers.begin(), xInliers.end(), 0.0f, std::plus{}, [](const auto val){return val*val;});
@@ -164,7 +168,23 @@ void RobustLinearRegression::fit(const std::vector<float>& x, const std::vector<
     auto durationOptimization = std::chrono::duration_cast<std::chrono::microseconds>(timeEndOptimization - timeStartOptimization).count();
     std::cout << "Optimization using all inliers took " << durationOptimization << " microseconds\n";
 
+    
+    //for debugin only: TODO: remove when not needed anymore
+    /*
+    std::vector<float> residualsAll;
+    residualsAll.reserve(numberOfPoints);
+    std::ranges::transform(x, y, std::back_inserter(residualsAll), [slope = m_slope, intercept = m_intercept](const auto x, const auto y){
+        const auto yPredicted = slope*x + intercept;
+        const auto residual = std::fabs(y - yPredicted);
+        return residual;
+        });
 
+    std::sort(residualsAll.begin(), residualsAll.end());
+    std::cout << "Median residual: " << residualsAll[residualsAll.size()/2] << "\n";
+    std::cout << "90th percentile residual: " << residualsAll[static_cast<size_t>(residualsAll.size()*0.9f)] << "\n";
+    std::cout << "80th percentile residual: " << residualsAll[static_cast<size_t>(residualsAll.size()*0.8f)] << "\n";
+    std::cout << "number of inliers: " << numberOfInliers << " out of " << numberOfPoints << " points\n";
+    */
 
 
 
