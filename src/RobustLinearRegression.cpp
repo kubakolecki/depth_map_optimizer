@@ -1,4 +1,4 @@
-#include "depth_optimizer/RobustLinearRegression.h"
+#include "depth_optimizer/RobustLinearRegression.hpp"
 
 
 #include <numeric>
@@ -17,7 +17,7 @@ RobustLinearRegression::RobustLinearRegression(float outlierThreshold, float out
     std::cout << "Number of RANSAC attempts set to: " << m_numberOfAttempts << "\n";
 }
 
-void RobustLinearRegression::fit(const std::vector<float>& x, const std::vector<float>& y)
+std::expected<RobustRegressionResult, RegressionFailureStatus> RobustLinearRegression::fit(const std::vector<float>& x, const std::vector<float>& y)
 {
     using clock = std::chrono::high_resolution_clock;
     auto timeStartRansac = clock::now();
@@ -28,11 +28,16 @@ void RobustLinearRegression::fit(const std::vector<float>& x, const std::vector<
     using InlierId = SampleId;
     using Sample = std::pair<SampleId, SampleId>;
     using NumberOfInliersType = size_t;
-    using RegressionResult = std::pair<SlopeType, InterceptType>;
+    using SlopeAndIntercept = std::pair<SlopeType, InterceptType>;
     using BestSampleResult = std::tuple<SampleId, NumberOfInliersType, std::vector<InlierId>>;
 
 
     const auto numberOfPoints{x.size()};
+
+    if (numberOfPoints < 2)
+    {
+        return std::unexpected{RegressionFailureStatus::NOT_ENOUGH_DATA};
+    }
 
     std::uniform_int_distribution<size_t> distribution{0, numberOfPoints-1};
     std::random_device device;
@@ -55,15 +60,13 @@ void RobustLinearRegression::fit(const std::vector<float>& x, const std::vector<
         return std::make_pair(slope, intercept);
     };
     
-    std::vector<RegressionResult> regressionResults(m_numberOfAttempts, RegressionResult{});
+    std::vector<SlopeAndIntercept> regressionResults(m_numberOfAttempts, SlopeAndIntercept{});
     std::ranges::transform(samples, regressionResults.begin(), comuteRegressionForMinimalSample);
 
-    
-    
     const auto outlierThreshold{m_outlierThreshold};
 
 
-    auto getInliers = [&x, &y, outlierThreshold](const RegressionResult& regressionResult)
+    auto getInliers = [&x, &y, outlierThreshold](const SlopeAndIntercept& regressionResult)
     {
         const auto numberOfSamples{x.size()};
         
@@ -124,10 +127,13 @@ void RobustLinearRegression::fit(const std::vector<float>& x, const std::vector<
     std::cout << "RANSAC fitting took " << durationRansac << " microseconds\n";
 
 
-
-    auto timeStartOptimization = clock::now();
     const auto& [bestSampleId, numberOfInliers, inlierIndices]{bestResult};
+    const auto inlierRatio {static_cast<float>(numberOfInliers)/static_cast<float>(numberOfPoints)};
 
+    if (inlierRatio < m_inlierRatioLimit)
+    {
+        return std::unexpected{RegressionFailureStatus::INLIER_RATIO_TOO_LOW};
+    }
 
     const auto [bestSlopeSoFar, bestInterceptSoFar]{regressionResults.at(bestSampleId)};
     std::vector<float> xInliers;
@@ -147,27 +153,27 @@ void RobustLinearRegression::fit(const std::vector<float>& x, const std::vector<
     const auto sumY = std::reduce(yInliers.begin(), yInliers.end(), 0.0f);
     const auto sumXY = std::transform_reduce(xInliers.begin(), xInliers.end(), yInliers.begin(), 0.0f, std::plus{}, [](const auto xVal, const auto yVal){ return xVal * yVal; } );
     const auto denominator = numberOfInliers * sumXSquared - sumX * sumX;
-
-    m_intercept = (sumY*sumXSquared - sumX*sumXY)/denominator;
-    m_slope = (numberOfInliers*sumXY - sumX*sumY)/denominator;
+    const auto intercept = (sumY*sumXSquared - sumX*sumXY)/denominator;
+    const auto slope = (numberOfInliers*sumXY - sumX*sumY)/denominator;
 
     std::vector<float> residuals;
     residuals.reserve(numberOfInliers);
-    std::ranges::transform(xInliers, yInliers, std::back_inserter(residuals), [slope = m_slope, intercept = m_intercept](const auto x, const auto y){
+    std::ranges::transform(xInliers, yInliers, std::back_inserter(residuals), [slope = slope, intercept = intercept](const auto x, const auto y){
         const auto yPredicted{slope*x + intercept};
         const auto residual{y - yPredicted};
         return residual;
       });
 
     const auto sumOfSquaredErrors = std::transform_reduce(residuals.begin(), residuals.end(), 0.0f, std::plus{}, [](auto val){return val*val;});
-    m_rmse = std::sqrt( sumOfSquaredErrors / static_cast<float>(numberOfInliers) );
-    m_inlierRatio = static_cast<float>(numberOfInliers)/static_cast<float>(numberOfPoints);
-    m_numberOfInliers = numberOfInliers;
+    const auto rmse = std::sqrt( sumOfSquaredErrors / static_cast<float>(numberOfInliers) );
+    
+    if (rmse > m_rmseLimit)
+    {
+        return std::unexpected{RegressionFailureStatus::RMSE_TOO_HIGH};
+    }
+        RobustRegressionResult finalResult{slope, intercept, inlierRatio, rmse, static_cast<int>(numberOfInliers)};
 
-    auto timeEndOptimization= clock::now();
-    auto durationOptimization = std::chrono::duration_cast<std::chrono::microseconds>(timeEndOptimization - timeStartOptimization).count();
-    std::cout << "Optimization using all inliers took " << durationOptimization << " microseconds\n";
-
+    return finalResult;
     
     //for debugin only: TODO: remove when not needed anymore
     /*

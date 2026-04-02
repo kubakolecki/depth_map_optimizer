@@ -1,6 +1,6 @@
 #include "depth_optimizer/DepthOptimizerNode.hpp"
 #include "depth_optimizer/msg/object_data.hpp"
-#include "depth_optimizer/DepthMapOptimizationProblem.h"
+#include "depth_optimizer/DepthMapOptimizationProblem.hpp"
 
 #include <geometry_msgs/msg/point32.hpp>
 
@@ -25,14 +25,39 @@ DepthOptimizerNode::DepthOptimizerNode(): Node("depth_optimizer_node")
 {
     auto paramObjectDataTopicNameDescription{rcl_interfaces::msg::ParameterDescriptor{}};
     auto paramNumberOfThreadsDescription{rcl_interfaces::msg::ParameterDescriptor{}};
+    auto paramNumberOfCeresIterationsDescription{rcl_interfaces::msg::ParameterDescriptor{}};
+    auto paramCeresLossFunctionDepthMapDescription{rcl_interfaces::msg::ParameterDescriptor{}};
+    auto paramCeresLossFunctionDepthMapParameterDescription{rcl_interfaces::msg::ParameterDescriptor{}};
+    auto paramCeresLossFunctionMapPointsDescription{rcl_interfaces::msg::ParameterDescriptor{}};
+    auto paramCeresLossFunctionMapPointsParameterDescription{rcl_interfaces::msg::ParameterDescriptor{}};
     paramObjectDataTopicNameDescription.description = "topic name for object data message";
     paramNumberOfThreadsDescription.description = "number of threads for OpenCV operations";
+    paramNumberOfCeresIterationsDescription.description = "number of iterations for ceres optimization";
+    paramCeresLossFunctionDepthMapDescription.description = "loss function for depth map optimization, possible values: TRIVIAL, CAUCHY, HUBER, TUKEY";
+    paramCeresLossFunctionDepthMapParameterDescription.description = "parameter for the loss function for depth map optimization";
+    paramCeresLossFunctionMapPointsDescription.description = "loss function for map points optimization, possible values: TRIVIAL, CAUCHY, HUBER, TUKEY";
+    paramCeresLossFunctionMapPointsParameterDescription.description = "parameter for the loss function for map points optimization";
     this->declare_parameter<std::string>("object_data_topic_name","/slam_deep_mapper/object_data", paramObjectDataTopicNameDescription);
     this->declare_parameter<int>("opencv_number_of_threads",16, paramNumberOfThreadsDescription);
+    this->declare_parameter<int>("number_of_ceres_iterations",4, paramNumberOfCeresIterationsDescription);
+    this->declare_parameter<std::string>("ceres_loss_function_depth_map","HUBER", paramCeresLossFunctionDepthMapDescription);
+    this->declare_parameter<double>("ceres_loss_function_depth_map_parameter", 2.0, paramCeresLossFunctionDepthMapParameterDescription);
+    this->declare_parameter<std::string>("ceres_loss_function_map_points","HUBER", paramCeresLossFunctionMapPointsDescription);
+    this->declare_parameter<double>("ceres_loss_function_map_points_parameter", 1.0, paramCeresLossFunctionMapPointsParameterDescription);
     
     objectDataSubscriber = this->create_subscription<depth_optimizer::msg::ObjectData>(this->get_parameter("object_data_topic_name").as_string(),10,
         std::bind(&DepthOptimizerNode::objectDataCallback, this, std::placeholders::_1)
     );
+
+    m_depthMapOptimizationConfig.numberOfCeresIterations = this->get_parameter("number_of_ceres_iterations").as_int();
+
+    const auto nameOfLossFunctionDepthMap = this->get_parameter("ceres_loss_function_depth_map").as_string();
+    const auto nameOfLossFunctionMapPoints = this->get_parameter("ceres_loss_function_map_points").as_string();
+    const auto parameterOfLossFunctionDepthMap = this->get_parameter("ceres_loss_function_depth_map_parameter").as_double();
+    const auto parameterOfLossFunctionMapPoints = this->get_parameter("ceres_loss_function_map_points_parameter").as_double();
+
+    m_depthMapOptimizationConfig.ceresLossFunctionForDepthMap = createLossFunctionDescription(nameOfLossFunctionDepthMap, parameterOfLossFunctionDepthMap);
+    m_depthMapOptimizationConfig.ceresLossFunctionForMapPoints = createLossFunctionDescription(nameOfLossFunctionMapPoints, parameterOfLossFunctionMapPoints);
 
     //TODO: looks like this is not needed to be set, OpenCV uses all available threads by default, remove later
     //cv::setNumThreads(this->get_parameter("opencv_number_of_threads").as_int()); //TODO test if this works, also test this in other nodes
@@ -47,6 +72,30 @@ DepthOptimizerNode::DepthOptimizerNode(): Node("depth_optimizer_node")
 
 }
 
+depth_map_optimization::LossFunctionDescription DepthOptimizerNode::createLossFunctionDescription(const std::string& lossFunctionString,[[maybe_unused]] const double parameter) const
+{
+    if (lossFunctionString == "TRIVIAL")
+    {
+        return depth_map_optimization::LossFunctionDescription{depth_map_optimization::TrivialLoss{}};
+    }
+    else if (lossFunctionString == "CAUCHY")
+    {
+        return depth_map_optimization::LossFunctionDescription{depth_map_optimization::CauchyLoss{parameter}};
+    }
+    else if (lossFunctionString == "HUBER")
+    {
+        return depth_map_optimization::LossFunctionDescription{depth_map_optimization::HuberLoss{parameter}};
+    }
+    else if (lossFunctionString == "TUKEY")
+    {
+        return depth_map_optimization::LossFunctionDescription{depth_map_optimization::TukeyLoss{parameter}};
+    }
+    else
+    {
+        RCLCPP_FATAL(this->get_logger(), "Invalid loss function name: %s", lossFunctionString.c_str());
+        throw std::invalid_argument("Invalid loss function name: " + lossFunctionString);
+    }
+}
 
 void DepthOptimizerNode::objectDataCallback(const depth_optimizer::msg::ObjectData::SharedPtr msg)
 {
@@ -105,46 +154,58 @@ void DepthOptimizerNode::objectDataCallback(const depth_optimizer::msg::ObjectDa
     //    //RCLCPP_INFO(this->get_logger(), "Point idx: %lld, depth from sparse map: %f, depth from depth map: %f", pointIdx, depthValueFromSparseMap, depthValueFromDepthMap);
     //}
 
-    m_robustLinearRegression->fit(depthValuesFromDepthMap, depthValuesFromSparseMap);
+    const auto regressionResult = m_robustLinearRegression->fit(depthValuesFromDepthMap, depthValuesFromSparseMap);
 
-    RCLCPP_INFO(this->get_logger(), "Completed robust linear regression fitting.");
-    RCLCPP_INFO(this->get_logger(), "Inlier ratio: %f, Number of inliers: %d, Slope: %f, Intercept: %f, RMSE: %f", 
-        m_robustLinearRegression->getInlierRatio(),
-        m_robustLinearRegression->getNumberOfInliers(),
-        m_robustLinearRegression->getSlope(),
-        m_robustLinearRegression->getIntercept(),
-        m_robustLinearRegression->getRmse()
-    );
-
-    if (m_robustLinearRegression->getRmse() > 0.5f) //TODO find a good threshold for rmse to decide when to apply linear correction, also test if this is needed at all, maybe we can just always apply linear correction
+    if (!regressionResult.has_value())
     {
-        RCLCPP_WARN(this->get_logger(), "High RMSE for robust linear regression fit: %f. Consider not applying linear correction to depth map.", m_robustLinearRegression->getRmse());
-        RCLCPP_WARN(this->get_logger(), "Depth values from sparse map and depth map might be significantly different");  
+        RCLCPP_WARN(this->get_logger(), "Robust linear regression fitting failed with status: %d", static_cast<int>(regressionResult.error()));
         return;
     }
 
+    RCLCPP_INFO(this->get_logger(), "Completed robust linear regression fitting.");
+    RCLCPP_INFO(this->get_logger(), "Inlier ratio: %f, Number of inliers: %d, Slope: %f, Intercept: %f, RMSE: %f", 
+        regressionResult.value().inlierRatio,
+        regressionResult.value().numberOfInliers,
+        regressionResult.value().slope,
+        regressionResult.value().intercept,
+        regressionResult.value().rmse
+    );
+
+    const auto regressionSlope = regressionResult.value().slope;
+    const auto regressionIntercept = regressionResult.value().intercept;
+    cv::Mat depthMapAfterLinearCorrection = depthMap * regressionSlope + regressionIntercept;
+
+    cv::imwrite((m_path_depth_maps_after_linear_correction / ("depth_map_" + std::to_string(m_frameCounter) + ".tif")).string(), depthMapAfterLinearCorrection);
+
     cv::Mat depthMapToOptmize;
-    depthMap.convertTo(depthMapToOptmize, CV_64F);
+    depthMapAfterLinearCorrection.convertTo(depthMapToOptmize, CV_64F);
+
+    m_depthMapOptimizationConfig.roi = depth_map_optimization::DepthMapOptimizationRoi{msg->depth_map_row_min, msg->depth_map_row_max, msg->depth_map_col_min, msg->depth_map_col_max};
+    m_depthMapOptimizationConfig.scaleFactorForDepthMap = 4;
     
-    DepthMapOptimizationProblem depthMapOptimizationProblem(
+    depth_map_optimization::DepthMapOptimizationProblem depthMapOptimizationProblem(
         depthMapToOptmize,
-        DepthMapOptimizationRoi{msg->depth_map_row_min, msg->depth_map_row_max, msg->depth_map_col_min, msg->depth_map_col_max},
-        static_cast<double>(1.0/m_robustLinearRegression->getSlope()),
-        4
+        1.0,
+        m_depthMapOptimizationConfig
     );
 
 
     depthMapOptimizationProblem.fillOptimizationProblem(msg->sparse_depth_information.points);
     depthMapOptimizationProblem.solve();
 
+
+    cv::Mat depthMapAfterOptmization;
+    depthMapToOptmize.convertTo(depthMapAfterOptmization, CV_32F);
+
+    
+    cv::imwrite((m_path_depth_maps_optimized / ("depth_map_" + std::to_string(m_frameCounter) + ".tif")).string(), depthMapAfterOptmization);
+
     RCLCPP_INFO(this->get_logger(), "Slope after optimization: %f", 1.0/depthMapOptimizationProblem.getSlope());
 
-    cv::Mat depthMapAfterLinearCorrection = depthMap * m_robustLinearRegression->getSlope() + m_robustLinearRegression->getIntercept();
- 
+    
     auto timeStartTransformation = clock::now();
 
     cv::Mat imageSegmentedByObjectIds (msg->rows, msg->columns, CV_16UC1, msg->image_segmented_by_classes.data() ); //Initialize with zeros
-
     const auto numberOfObjects{msg->number_of_objects};
 
     for (auto classId: msg->list_of_classes)
