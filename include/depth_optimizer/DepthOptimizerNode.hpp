@@ -1,7 +1,7 @@
 #pragma once
 
 #include <rclcpp/rclcpp.hpp>
-#include "depth_optimizer/msg/object_data.hpp"
+#include "ros_common_messages/msg/image_based_mapping_data.hpp"
 #include "depth_optimizer/RobustLinearRegression.hpp"
 #include "depth_optimizer/DepthMapOptimizationConfig.hpp"
 
@@ -16,8 +16,8 @@ class DepthOptimizerNode: public rclcpp::Node
 {
 
 private:
-    rclcpp::Subscription<depth_optimizer::msg::ObjectData>::SharedPtr objectDataSubscriber;
-    void objectDataCallback(const depth_optimizer::msg::ObjectData::SharedPtr msg);
+    rclcpp::Subscription<ros_common_messages::msg::ImageBasedMappingData>::SharedPtr imageBasedMappingDataSubscriber;
+    void imageBasedMappingDataCallback(const ros_common_messages::msg::ImageBasedMappingData::SharedPtr msg);
     depth_map_optimization::LossFunctionDescription createLossFunctionDescription(const std::string& lossFunctionString, const double parameter) const;
     std::unique_ptr<RobustLinearRegression> m_robustLinearRegression;
 

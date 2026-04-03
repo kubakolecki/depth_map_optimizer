@@ -11,7 +11,7 @@ def generate_launch_description():
             executable='depth_optimizer_node',
             name='depth_optimizer_node',
             output='screen',
-            parameters=[{'object_data_topic_name': '/slam_deep_mapper/object_data'},
+            parameters=[{'mapping_data_topic_name': 'slam_deep_mapper/mapping_data'},
                         {'opencv_number_of_threads': 16},
                         {'number_of_ceres_iterations': 3},
                         {'ceres_loss_function_depth_map': 'CAUCHY'}, #TRIVIAL, HUBER, CAUCHY,TUKEY

@@ -1,5 +1,4 @@
 #include "depth_optimizer/DepthOptimizerNode.hpp"
-#include "depth_optimizer/msg/object_data.hpp"
 #include "depth_optimizer/DepthMapOptimizationProblem.hpp"
 
 #include <geometry_msgs/msg/point32.hpp>
@@ -23,21 +22,21 @@
 
 DepthOptimizerNode::DepthOptimizerNode(): Node("depth_optimizer_node")
 {
-    auto paramObjectDataTopicNameDescription{rcl_interfaces::msg::ParameterDescriptor{}};
+    auto paramMappingDataTopicNameDescription{rcl_interfaces::msg::ParameterDescriptor{}};
     auto paramNumberOfThreadsDescription{rcl_interfaces::msg::ParameterDescriptor{}};
     auto paramNumberOfCeresIterationsDescription{rcl_interfaces::msg::ParameterDescriptor{}};
     auto paramCeresLossFunctionDepthMapDescription{rcl_interfaces::msg::ParameterDescriptor{}};
     auto paramCeresLossFunctionDepthMapParameterDescription{rcl_interfaces::msg::ParameterDescriptor{}};
     auto paramCeresLossFunctionMapPointsDescription{rcl_interfaces::msg::ParameterDescriptor{}};
     auto paramCeresLossFunctionMapPointsParameterDescription{rcl_interfaces::msg::ParameterDescriptor{}};
-    paramObjectDataTopicNameDescription.description = "topic name for object data message";
+    paramMappingDataTopicNameDescription.description = "topic name for mapping data message";
     paramNumberOfThreadsDescription.description = "number of threads for OpenCV operations";
     paramNumberOfCeresIterationsDescription.description = "number of iterations for ceres optimization";
     paramCeresLossFunctionDepthMapDescription.description = "loss function for depth map optimization, possible values: TRIVIAL, CAUCHY, HUBER, TUKEY";
     paramCeresLossFunctionDepthMapParameterDescription.description = "parameter for the loss function for depth map optimization";
     paramCeresLossFunctionMapPointsDescription.description = "loss function for map points optimization, possible values: TRIVIAL, CAUCHY, HUBER, TUKEY";
     paramCeresLossFunctionMapPointsParameterDescription.description = "parameter for the loss function for map points optimization";
-    this->declare_parameter<std::string>("object_data_topic_name","/slam_deep_mapper/object_data", paramObjectDataTopicNameDescription);
+    this->declare_parameter<std::string>("mapping_data_topic_name","'slam_deep_mapper/mapping_data'", paramMappingDataTopicNameDescription);
     this->declare_parameter<int>("opencv_number_of_threads",16, paramNumberOfThreadsDescription);
     this->declare_parameter<int>("number_of_ceres_iterations",4, paramNumberOfCeresIterationsDescription);
     this->declare_parameter<std::string>("ceres_loss_function_depth_map","HUBER", paramCeresLossFunctionDepthMapDescription);
@@ -45,8 +44,8 @@ DepthOptimizerNode::DepthOptimizerNode(): Node("depth_optimizer_node")
     this->declare_parameter<std::string>("ceres_loss_function_map_points","HUBER", paramCeresLossFunctionMapPointsDescription);
     this->declare_parameter<double>("ceres_loss_function_map_points_parameter", 1.0, paramCeresLossFunctionMapPointsParameterDescription);
     
-    objectDataSubscriber = this->create_subscription<depth_optimizer::msg::ObjectData>(this->get_parameter("object_data_topic_name").as_string(),10,
-        std::bind(&DepthOptimizerNode::objectDataCallback, this, std::placeholders::_1)
+    imageBasedMappingDataSubscriber = this->create_subscription<ros_common_messages::msg::ImageBasedMappingData>(this->get_parameter("mapping_data_topic_name").as_string(),10,
+        std::bind(&DepthOptimizerNode::imageBasedMappingDataCallback, this, std::placeholders::_1)
     );
 
     m_depthMapOptimizationConfig.numberOfCeresIterations = this->get_parameter("number_of_ceres_iterations").as_int();
@@ -97,10 +96,10 @@ depth_map_optimization::LossFunctionDescription DepthOptimizerNode::createLossFu
     }
 }
 
-void DepthOptimizerNode::objectDataCallback(const depth_optimizer::msg::ObjectData::SharedPtr msg)
+void DepthOptimizerNode::imageBasedMappingDataCallback(const ros_common_messages::msg::ImageBasedMappingData::SharedPtr msg)
 {
     using clock = std::chrono::high_resolution_clock;
-    RCLCPP_INFO(this->get_logger(), "Received ObjectData message with: %d objects", msg->number_of_objects);
+    RCLCPP_INFO(this->get_logger(), "Received ImageBasedMappingData message with: %d objects", msg->number_of_objects);
 
 
     std::string pathFilePointCloudForDebug = "pointcloud_" + std::to_string(m_frameCounter) + "_" + std::to_string(msg->number_of_objects) + ".txt";
@@ -133,7 +132,6 @@ void DepthOptimizerNode::objectDataCallback(const depth_optimizer::msg::ObjectDa
 
     cv::Mat mapX(1, numberOfValidMapPoints, CV_32FC1, coordinatesX.data());
     cv::Mat mapY(1, numberOfValidMapPoints, CV_32FC1, coordinatesY.data());
-
     std::vector<float> depthValuesFromDepthMap(numberOfValidMapPoints,0.0f);
     cv::Mat depthValuesWrapper(1, numberOfValidMapPoints, CV_32FC1, depthValuesFromDepthMap.data());
 
@@ -233,12 +231,12 @@ void DepthOptimizerNode::objectDataCallback(const depth_optimizer::msg::ObjectDa
         m_ones = cv::Mat::ones(msg->rows, msg->columns, CV_32F);
     }
 
-    //RCLCPP_INFO(this->get_logger(), "Focal length for left camera is: %f %f", msg->focal_lenght_left[0], msg->focal_lenght_left[1]);
+    //RCLCPP_INFO(this->get_logger(), "Focal length for left camera is: %f %f", msg->focal_length_left[0], msg->focal_length_left[1]);
 
     cv::Mat cameraFrameCoordinatesX;
     cv::Mat cameraFrameCoordinatesY;
-    cv::multiply(m_imageCoordinatesX, depthMapAfterLinearCorrection, cameraFrameCoordinatesX, (1.0f / msg->focal_lenght_left[0]));
-    cv::multiply(m_imageCoordinatesY, depthMapAfterLinearCorrection, cameraFrameCoordinatesY, (1.0f / msg->focal_lenght_left[1]));
+    cv::multiply(m_imageCoordinatesX, depthMapAfterLinearCorrection, cameraFrameCoordinatesX, (1.0f / msg->focal_length_left[0]));
+    cv::multiply(m_imageCoordinatesY, depthMapAfterLinearCorrection, cameraFrameCoordinatesY, (1.0f / msg->focal_length_left[1]));
 
     CV_Assert(m_imageCoordinatesX.size() == depthMapAfterLinearCorrection.size() && m_imageCoordinatesY.size() == depthMapAfterLinearCorrection.size());
     cv::Mat coordinateAs4Channels = cv::Mat(msg->rows, msg->columns, CV_32FC4);
