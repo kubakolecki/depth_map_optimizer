@@ -32,6 +32,7 @@ src/depth_optimizer.cpp
 src/RobustLinearRegression.cpp
 src/DepthOptimizerNode.cpp
 src/DepthMapOptimizationProblem.cpp
+src/io.cpp
 )
 
 ament_target_dependencies(depth_optimizer_node

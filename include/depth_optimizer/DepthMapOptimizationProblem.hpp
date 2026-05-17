@@ -13,18 +13,24 @@
 
 namespace depth_map_optimization
 {
-
-
-
-
+struct SolutionResult
+{
+    double sigmaZero{1.0};
+    bool isSolutionUsable{true};
+    std::string solverReport{};
+};
 
 class DepthMapOptimizationProblem
 {
     public:
+        using DepthResidual = cv::Vec3f;
+        using DepthResiduals = std::vector<DepthResidual>;
+        
         explicit DepthMapOptimizationProblem(cv::Mat& depthMap,  double slope, const DepthMapOptimizationConfig& config);
         void fillOptimizationProblem(const std::vector<geometry_msgs::msg::Point32>& observedDepthMapPoints);
-        void solve();
+        SolutionResult solve();
         double getSlope() const { return m_slope; }
+        DepthResiduals evaluateDepthResiduals(const std::vector<geometry_msgs::msg::Point32>& observedDepthMapPoints) const;
 
 
     private:

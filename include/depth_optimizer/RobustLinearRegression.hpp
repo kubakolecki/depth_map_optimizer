@@ -10,6 +10,7 @@ struct RobustRegressionResult
     float inlierRatio{0.0f};
     float rmse{0.0f};
     int numberOfInliers{0};
+    int numberOfOutliers{0};
 };
 
 enum class RegressionFailureStatus
@@ -43,9 +44,6 @@ private:
     //Limits for accepting the final reslut: TODO make them configurable via constructor or setter methods
     float m_inlierRatioLimit{0.7f};
     float m_rmseLimit{0.33f};
-
-
-
 
 
 };

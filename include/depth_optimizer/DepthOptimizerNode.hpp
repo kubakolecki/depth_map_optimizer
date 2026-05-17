@@ -29,9 +29,12 @@ private:
     int m_frameCounter{0};
     depth_map_optimization::DepthMapOptimizationConfig m_depthMapOptimizationConfig;
 
-    std::filesystem::path m_path_depth_maps_original{"/home/kuba/dev/projects/ros2_jazzy_vimbax_ws/depth_maps_original"};
-    std::filesystem::path m_path_depth_maps_after_linear_correction{"/home/kuba/dev/projects/ros2_jazzy_vimbax_ws/depth_maps_after_linear_correction"};
-    std::filesystem::path m_path_depth_maps_optimized{"/home/kuba/dev/projects/ros2_jazzy_vimbax_ws/depth_maps_optimized"};
+    std::filesystem::path m_pathDepthMaps{""};
+    std::filesystem::path m_pathOptimizationReports{""};
+    bool m_doSaveDepthMaps{false};
+    bool m_doSaveOptimizationReports{false};
+
+    std::string stampToString(builtin_interfaces::msg::Time stamp) const;
 
 public:
 

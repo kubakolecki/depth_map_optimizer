@@ -70,7 +70,7 @@ void DepthMapOptimizationProblem::fillOptimizationProblem(const std::vector<geom
     
 }
 
-void DepthMapOptimizationProblem::solve()
+SolutionResult DepthMapOptimizationProblem::solve()
 {
     using clock = std::chrono::high_resolution_clock;
     auto timeStartT = clock::now();
@@ -95,7 +95,10 @@ void DepthMapOptimizationProblem::solve()
     cv::resize(mapOfCorrections, mapCorrectionsUpscaled, m_depthMapOriginal.size(), 0, 0, cv::INTER_LINEAR);
     m_depthMapOriginal += mapCorrectionsUpscaled;
 
+    const double sigmaZero {std::sqrt(2.0 * summary.final_cost / (summary.num_residuals - summary.num_effective_parameters))};
+    const auto isSolutionUsable{summary.IsSolutionUsable()};
 
+    return {sigmaZero, isSolutionUsable, summary.FullReport()};
 }
 
 ceres::LossFunction* DepthMapOptimizationProblem::createLossFunction(const LossFunctionDescription& lossFunctionDescription) const
@@ -121,5 +124,27 @@ ceres::LossFunction* DepthMapOptimizationProblem::createLossFunction(const LossF
                                                  lossFunctionDescription);
     return lossFcnPtr;
 
+}
+
+DepthMapOptimizationProblem::DepthResiduals DepthMapOptimizationProblem::evaluateDepthResiduals(const std::vector<geometry_msgs::msg::Point32>& observedDepthMapPoints) const
+{
+    DepthMapOptimizationProblem::DepthResiduals depthResiduals;
+    depthResiduals.reserve(observedDepthMapPoints.size());
+
+    for (const auto& point: observedDepthMapPoints)
+    {
+        const auto row {static_cast<int>(point.y)};
+        const auto col {static_cast<int>(point.x)};
+
+        const auto residual{static_cast<float>(m_depthMapOriginal.at<double>(row, col) - point.z)};
+        depthResiduals.emplace_back(point.x, point.y, residual);
+    }
+
+    std::sort(depthResiduals.begin(), depthResiduals.end(), [](const auto& a, const auto& b)
+    {
+        return std::abs(a[2]) > std::abs(b[2]);
+    });
+
+    return depthResiduals;
 }
 

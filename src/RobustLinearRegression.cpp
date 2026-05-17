@@ -171,7 +171,8 @@ std::expected<RobustRegressionResult, RegressionFailureStatus> RobustLinearRegre
     {
         return std::unexpected{RegressionFailureStatus::RMSE_TOO_HIGH};
     }
-        RobustRegressionResult finalResult{slope, intercept, inlierRatio, rmse, static_cast<int>(numberOfInliers)};
+    
+    RobustRegressionResult finalResult{slope, intercept, inlierRatio, rmse, static_cast<int>(numberOfInliers), static_cast<int>(x.size() - numberOfInliers) };
 
     return finalResult;
     

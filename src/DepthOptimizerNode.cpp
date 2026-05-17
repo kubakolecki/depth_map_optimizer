@@ -1,5 +1,6 @@
 #include "depth_optimizer/DepthOptimizerNode.hpp"
 #include "depth_optimizer/DepthMapOptimizationProblem.hpp"
+#include "depth_optimizer/io.hpp"
 
 #include <geometry_msgs/msg/point32.hpp>
 
@@ -19,6 +20,7 @@
 #include <execution>
 #include <iostream> //TODO remove this after debugging
 #include <fstream> //TODO remove this after debugging
+#include <sstream>
 
 DepthOptimizerNode::DepthOptimizerNode(): Node("depth_optimizer_node")
 {
@@ -29,6 +31,13 @@ DepthOptimizerNode::DepthOptimizerNode(): Node("depth_optimizer_node")
     auto paramCeresLossFunctionDepthMapParameterDescription{rcl_interfaces::msg::ParameterDescriptor{}};
     auto paramCeresLossFunctionMapPointsDescription{rcl_interfaces::msg::ParameterDescriptor{}};
     auto paramCeresLossFunctionMapPointsParameterDescription{rcl_interfaces::msg::ParameterDescriptor{}};
+    auto paramDoSaveDepthMapsToFilesDescription{rcl_interfaces::msg::ParameterDescriptor{}};
+    auto paramDoSaveOptmizationReportsDescription{rcl_interfaces::msg::ParameterDescriptor{}};
+    auto paramPathToDepthmapDirectoryDescription{rcl_interfaces::msg::ParameterDescriptor{}};
+    auto paramPathToOptimizationReportsDirectoryDescription{rcl_interfaces::msg::ParameterDescriptor{}};
+    auto paramRegressionOutlierThresholdDescription{rcl_interfaces::msg::ParameterDescriptor{}};
+    auto paramRegressionOutlierProbabilityDescription{rcl_interfaces::msg::ParameterDescriptor{}};
+
     paramMappingDataTopicNameDescription.description = "topic name for mapping data message";
     paramNumberOfThreadsDescription.description = "number of threads for OpenCV operations";
     paramNumberOfCeresIterationsDescription.description = "number of iterations for ceres optimization";
@@ -36,6 +45,13 @@ DepthOptimizerNode::DepthOptimizerNode(): Node("depth_optimizer_node")
     paramCeresLossFunctionDepthMapParameterDescription.description = "parameter for the loss function for depth map optimization";
     paramCeresLossFunctionMapPointsDescription.description = "loss function for map points optimization, possible values: TRIVIAL, CAUCHY, HUBER, TUKEY";
     paramCeresLossFunctionMapPointsParameterDescription.description = "parameter for the loss function for map points optimization";
+    paramDoSaveDepthMapsToFilesDescription.description = "if true, saves depth maps to file in the specified directories";
+    paramDoSaveOptmizationReportsDescription.description = "if true, saves optimization reports to file in the specified directories";
+    paramPathToDepthmapDirectoryDescription.description = "path to the directory, where depth maps will be saved";
+    paramPathToOptimizationReportsDirectoryDescription.description = "path to the directory, where optimization reports will be saved";
+    paramRegressionOutlierThresholdDescription.description = "threshold for RANSAC step in robust regression algorithm";
+    paramRegressionOutlierProbabilityDescription.description = "probability that the sample of linear regression is an outlier";
+
     this->declare_parameter<std::string>("mapping_data_topic_name","'slam_deep_mapper/mapping_data'", paramMappingDataTopicNameDescription);
     this->declare_parameter<int>("opencv_number_of_threads",16, paramNumberOfThreadsDescription);
     this->declare_parameter<int>("number_of_ceres_iterations",4, paramNumberOfCeresIterationsDescription);
@@ -43,7 +59,13 @@ DepthOptimizerNode::DepthOptimizerNode(): Node("depth_optimizer_node")
     this->declare_parameter<double>("ceres_loss_function_depth_map_parameter", 2.0, paramCeresLossFunctionDepthMapParameterDescription);
     this->declare_parameter<std::string>("ceres_loss_function_map_points","HUBER", paramCeresLossFunctionMapPointsDescription);
     this->declare_parameter<double>("ceres_loss_function_map_points_parameter", 1.0, paramCeresLossFunctionMapPointsParameterDescription);
-    
+    this->declare_parameter<bool>("do_save_depth_maps_to_files", false, paramDoSaveDepthMapsToFilesDescription);
+    this->declare_parameter<bool>("do_save_optimization_reports_to_files", false, paramDoSaveOptmizationReportsDescription);
+    this->declare_parameter<std::string>("path_to_depthmap_directory","", paramPathToDepthmapDirectoryDescription);
+    this->declare_parameter<std::string>("path_to_optimization_reports_directory","", paramPathToOptimizationReportsDirectoryDescription);
+    this->declare_parameter<double>("regression_outlier_threshold",0.2, paramRegressionOutlierThresholdDescription);
+    this->declare_parameter<double>("regression_outlier_probability",0.5, paramRegressionOutlierProbabilityDescription);
+
     imageBasedMappingDataSubscriber = this->create_subscription<ros_common_messages::msg::ImageBasedMappingData>(this->get_parameter("mapping_data_topic_name").as_string(),10,
         std::bind(&DepthOptimizerNode::imageBasedMappingDataCallback, this, std::placeholders::_1)
     );
@@ -64,10 +86,25 @@ DepthOptimizerNode::DepthOptimizerNode(): Node("depth_optimizer_node")
     RCLCPP_INFO(this->get_logger(), "The number of opencv threads has been set to %d", cv::getNumThreads());
     cv::parallel::setParallelForBackend(std::make_shared<cv::parallel::tbb::ParallelForBackend>());
 
-    const auto outlierThreshold{0.2f}; 
-    const auto outlierProbability{0.5f}; 
+    const auto outlierThreshold{this->get_parameter("regression_outlier_threshold").as_double()}; 
+    const auto outlierProbability{this->get_parameter("regression_outlier_probability").as_double()}; 
 
     m_robustLinearRegression = std::make_unique<RobustLinearRegression>(outlierThreshold, outlierProbability);
+
+    m_doSaveDepthMaps = this->get_parameter("do_save_depth_maps_to_files").as_bool();
+    m_doSaveOptimizationReports = this->get_parameter("do_save_optimization_reports_to_files").as_bool();
+    m_pathDepthMaps = std::filesystem::path{this->get_parameter("path_to_depthmap_directory").as_string()};
+    m_pathOptimizationReports = std::filesystem::path{this->get_parameter("path_to_optimization_reports_directory").as_string()};
+
+    if (m_doSaveDepthMaps && !std::filesystem::exists(m_pathDepthMaps))
+    {
+        RCLCPP_FATAL(this->get_logger(), "Directory pointed to store depth maps in, does not exitst!");
+    }
+
+    if (m_doSaveOptimizationReports && !std::filesystem::exists(m_pathOptimizationReports))
+    {
+        RCLCPP_FATAL(this->get_logger(), "Directory pointed to store optimization reports in, does not exitst!");
+    }
 
 }
 
@@ -102,7 +139,8 @@ void DepthOptimizerNode::imageBasedMappingDataCallback(const ros_common_messages
     RCLCPP_INFO(this->get_logger(), "Received ImageBasedMappingData message with: %d objects", msg->number_of_objects);
 
 
-    std::string pathFilePointCloudForDebug = "pointcloud_" + std::to_string(m_frameCounter) + "_" + std::to_string(msg->number_of_objects) + ".txt";
+
+    //std::string pathFilePointCloudForDebug = "pointcloud_" + std::to_string(m_frameCounter) + "_" + std::to_string(msg->number_of_objects) + ".txt";
 
     //getting depth values from depth map for map points with corresponding 2D points in image
 
@@ -152,7 +190,7 @@ void DepthOptimizerNode::imageBasedMappingDataCallback(const ros_common_messages
     //    //RCLCPP_INFO(this->get_logger(), "Point idx: %lld, depth from sparse map: %f, depth from depth map: %f", pointIdx, depthValueFromSparseMap, depthValueFromDepthMap);
     //}
 
-    const auto regressionResult = m_robustLinearRegression->fit(depthValuesFromDepthMap, depthValuesFromSparseMap);
+    const auto regressionResult {m_robustLinearRegression->fit(depthValuesFromDepthMap, depthValuesFromSparseMap)};
 
     if (!regressionResult.has_value())
     {
@@ -169,11 +207,22 @@ void DepthOptimizerNode::imageBasedMappingDataCallback(const ros_common_messages
         regressionResult.value().rmse
     );
 
-    const auto regressionSlope = regressionResult.value().slope;
-    const auto regressionIntercept = regressionResult.value().intercept;
-    cv::Mat depthMapAfterLinearCorrection = depthMap * regressionSlope + regressionIntercept;
+    const auto regressionSlope {regressionResult.value().slope};
+    const auto regressionIntercept {regressionResult.value().intercept};
+    cv::Mat depthMapAfterLinearCorrection {depthMap * regressionSlope + regressionIntercept};
 
-    cv::imwrite((m_path_depth_maps_after_linear_correction / ("depth_map_" + std::to_string(m_frameCounter) + ".tif")).string(), depthMapAfterLinearCorrection);
+    if (m_doSaveDepthMaps)
+    {
+        cv::imwrite((m_pathDepthMaps / ("depth_map_corrected_" + stampToString(msg->pose.header.stamp) + ".tif")).string(), depthMapAfterLinearCorrection);
+    }
+
+    if (m_doSaveOptimizationReports)
+    {
+        const auto pathFileReport{m_pathDepthMaps / ("regression_report_" + stampToString(msg->pose.header.stamp) + ".txt")};
+        std::ofstream fileReport{pathFileReport};
+        depth_optmizer_io::sendToStream(fileReport, regressionResult.value());
+        fileReport.close();
+    }
 
     cv::Mat depthMapToOptmize;
     depthMapAfterLinearCorrection.convertTo(depthMapToOptmize, CV_64F);
@@ -181,205 +230,215 @@ void DepthOptimizerNode::imageBasedMappingDataCallback(const ros_common_messages
     m_depthMapOptimizationConfig.roi = depth_map_optimization::DepthMapOptimizationRoi{msg->depth_map_row_min, msg->depth_map_row_max, msg->depth_map_col_min, msg->depth_map_col_max};
     m_depthMapOptimizationConfig.scaleFactorForDepthMap = 4;
     
-    depth_map_optimization::DepthMapOptimizationProblem depthMapOptimizationProblem(
-        depthMapToOptmize,
-        1.0,
-        m_depthMapOptimizationConfig
-    );
+    depth_map_optimization::DepthMapOptimizationProblem depthMapOptimizationProblem(depthMapToOptmize, 1.0, m_depthMapOptimizationConfig);
 
 
     depthMapOptimizationProblem.fillOptimizationProblem(msg->sparse_depth_information.points);
-    depthMapOptimizationProblem.solve();
+    const auto optimizationResult{depthMapOptimizationProblem.solve()};
 
 
     cv::Mat depthMapAfterOptmization;
     depthMapToOptmize.convertTo(depthMapAfterOptmization, CV_32F);
 
-    
-    cv::imwrite((m_path_depth_maps_optimized / ("depth_map_" + std::to_string(m_frameCounter) + ".tif")).string(), depthMapAfterOptmization);
+    if (m_doSaveDepthMaps)
+    {
+        cv::imwrite((m_pathDepthMaps / ("depth_map_optimized_" + stampToString(msg->pose.header.stamp) + ".tif")).string(), depthMapAfterOptmization);
+    }
 
     RCLCPP_INFO(this->get_logger(), "Slope after optimization: %f", 1.0/depthMapOptimizationProblem.getSlope());
 
+    const auto depthResiduals{depthMapOptimizationProblem.evaluateDepthResiduals(msg->sparse_depth_information.points)};
+
+    if (m_doSaveOptimizationReports)
+    {
+        const auto pathFileReport{m_pathOptimizationReports / ("optimization_report_" + stampToString(msg->pose.header.stamp) + ".txt")};
+        std::ofstream fileReport{pathFileReport};
+        depth_optmizer_io::sendToStream(fileReport, optimizationResult);
+        fileReport <<"\n";
+        depth_optmizer_io::sendToStream(fileReport, depthResiduals); 
+        fileReport.close();
+    }
+
+
+    //BELOW WE GENERATE POINTCLOUDS FOR OBJECTS DETECTED BY YOLO, AND WE TRANSFORM THOSE CLOUDS TO WORLD FRAME
+    //THIS FUNCTIONALITY SHOULD GO TO OTHER NODE
+
     
-    auto timeStartTransformation = clock::now();
 
-    cv::Mat imageSegmentedByObjectIds (msg->rows, msg->columns, CV_16UC1, msg->image_segmented_by_classes.data() ); //Initialize with zeros
-    const auto numberOfObjects{msg->number_of_objects};
-
-    for (auto classId: msg->list_of_classes)
-    {
-        RCLCPP_INFO(this->get_logger(), "Detected object with class id %d", classId);
-    }
-
-
-    if (m_isTheFirstFrameBeingProcessed)
-    {
-        cv::Mat yRange(msg->rows, 1, CV_32F);
-        for (unsigned int i = 0; i < msg->rows; ++i)
-        {
-            yRange.at<float>(i, 0) = static_cast<float>(i);
-        }
-
-        cv::Mat xRange(1, msg->columns, CV_32F);
-        for (unsigned int j = 0; j < msg->columns; ++j)
-        {
-            xRange.at<float>(0, j) = static_cast<float>(j);
-        }
-
-        m_imageCoordinatesY = cv::repeat(yRange, 1, msg->columns) - static_cast<float>(msg->rows)/2.0f + 0.5f;
-        m_imageCoordinatesX = cv::repeat(xRange, msg->rows, 1) - static_cast<float>(msg->columns)/2.0f + 0.5f;
-        m_ones = cv::Mat::ones(msg->rows, msg->columns, CV_32F);
-    }
-
-    //RCLCPP_INFO(this->get_logger(), "Focal length for left camera is: %f %f", msg->focal_length_left[0], msg->focal_length_left[1]);
-
-    cv::Mat cameraFrameCoordinatesX;
-    cv::Mat cameraFrameCoordinatesY;
-    cv::multiply(m_imageCoordinatesX, depthMapAfterLinearCorrection, cameraFrameCoordinatesX, (1.0f / msg->focal_length_left[0]));
-    cv::multiply(m_imageCoordinatesY, depthMapAfterLinearCorrection, cameraFrameCoordinatesY, (1.0f / msg->focal_length_left[1]));
-
-    CV_Assert(m_imageCoordinatesX.size() == depthMapAfterLinearCorrection.size() && m_imageCoordinatesY.size() == depthMapAfterLinearCorrection.size());
-    cv::Mat coordinateAs4Channels = cv::Mat(msg->rows, msg->columns, CV_32FC4);
-
-    auto timeStartInsertingChannels = clock::now();
-
-    cv::insertChannel(cameraFrameCoordinatesX, coordinateAs4Channels, 0);
-    cv::insertChannel(cameraFrameCoordinatesY, coordinateAs4Channels, 1);
-    cv::insertChannel(depthMapAfterLinearCorrection, coordinateAs4Channels, 2);
-    cv::insertChannel(m_ones, coordinateAs4Channels, 3);
-
-    auto timeEndInsertingChannels = clock::now();
-    auto durationInsertingChannels = std::chrono::duration_cast<std::chrono::microseconds>(timeEndInsertingChannels - timeStartInsertingChannels).count();
-    RCLCPP_INFO(this->get_logger(), "Inserted channels into 4-channel matrix in %ld microseconds", durationInsertingChannels);
-    // Alternatively:
-    //cv::merge(std::vector<cv::Mat>{cameraFrameCoordinatesX, cameraFrameCoordinatesY, depthMapAfterLinearCorrection, m_ones}  , coordinateAs4Channels);
-
-    CV_Assert(coordinateAs4Channels.isContinuous());
-    const auto numberOfPixels {coordinateAs4Channels.rows * coordinateAs4Channels.cols};
-    cv::Mat points4xN = coordinateAs4Channels.reshape(1, numberOfPixels).t(); //Now: N rows, 4 columns, 1 channel
-
-    /*
-    std::ofstream ofsBefore("pointcloud_before_transformation_" + std::to_string(m_frameCounter) + ".txt");
-    if (ofsBefore.is_open())
-    {
-        for (int i = 0; i < points4xN.cols; ++i)
-        {
-            ofsBefore << points4xN.at<float>(0,i) << " " << points4xN.at<float>(1,i) << " " << points4xN.at<float>(2,i) << "\n";
-        }
-        ofsBefore.close();
-        RCLCPP_INFO(this->get_logger(), "Saved point cloud before transformation to pointcloud_before_transformation_%d.txt", m_frameCounter);
-    }
-    */
-
-    cv::Quatd quaternion{msg->pose.pose.orientation.w, msg->pose.pose.orientation.x, msg->pose.pose.orientation.y, msg->pose.pose.orientation.z};
-    cv::Mat transformationMatrix = cv::Mat(quaternion.toRotMat4x4());
-    transformationMatrix.convertTo(transformationMatrix, CV_32F);
-
-    //std::cout << "Transformation matrix: \n" << transformationMatrix << std::endl;
-    transformationMatrix.at<float>(0,3) = static_cast<float>(msg->pose.pose.position.x);
-    transformationMatrix.at<float>(1,3) = static_cast<float>(msg->pose.pose.position.y);
-    transformationMatrix.at<float>(2,3) = static_cast<float>(msg->pose.pose.position.z);
-    transformationMatrix.convertTo(transformationMatrix, CV_32F);
-
-    //std::cout << "Transformation matrix: \n" << transformationMatrix << std::endl;
-
-    /*
-    auto timeStartMatrixMultiplicationEigen = clock::now(); 
-    Eigen::Map<Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> transformationMarixEigen(transformationMatrix.ptr<float>(), transformationMatrix.rows, transformationMatrix.cols);
-    Eigen::Map<Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> points4xNEigen(points4xN.ptr<float>(), points4xN.rows, points4xN.cols);
-    Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor> points4xNTransformedEigen = transformationMarixEigen * points4xNEigen;
-    auto timeEndMatrixMultiplicationEigen = clock::now();
-    auto durationMatrixMultiplicationEigen = std::chrono::duration_cast<std::chrono::microseconds>(timeEndMatrixMultiplicationEigen - timeStartMatrixMultiplicationEigen).count();
-    RCLCPP_INFO(this->get_logger(), "Matrix multiplication with Eigen took %ld microseconds", durationMatrixMultiplicationEigen);
-    */
-
-
-    auto timeStartMatrixMultiplication= clock::now();
-    cv::Mat points4xNTransformed = (transformationMatrix* points4xN).t();
-    auto timeEndMatrixMultiplication = clock::now();
-    auto durationMatrixMultiplication = std::chrono::duration_cast<std::chrono::microseconds>(timeEndMatrixMultiplication - timeStartMatrixMultiplication).count();
-    RCLCPP_INFO(this->get_logger(), "Matrix multiplication took %ld microseconds", durationMatrixMultiplication);
-
-
-
-    cv::Mat coordinatesInWorldAs4Channels = points4xNTransformed.reshape(4).reshape(4, msg->rows);
-
-    cv::Rect roi(msg->depth_map_col_min, msg->depth_map_row_min, msg->depth_map_col_max - msg->depth_map_col_min, msg->depth_map_row_max - msg->depth_map_row_min);
-
-    cv::Mat coordinatesInWorldAs4ChannelsCroped = coordinatesInWorldAs4Channels(roi).clone();
-    cv::Mat imageSegmentedByObjectIdsCroped = imageSegmentedByObjectIds(roi).clone();
-
-    RCLCPP_INFO(this->get_logger(), "Cropped coordinate matrix is of size: rows=%d, cols=%d", coordinatesInWorldAs4ChannelsCroped.rows, coordinatesInWorldAs4ChannelsCroped.cols);
-    RCLCPP_INFO(this->get_logger(), "Image segmented by object IDs size: rows=%d, cols=%d", imageSegmentedByObjectIdsCroped.rows, imageSegmentedByObjectIdsCroped.cols);
-
-    std::vector<std::vector<geometry_msgs::msg::Point32>> pointsPerObject(numberOfObjects);
-
-
-    for (auto pointCloud: pointsPerObject)
-    {
-        pointCloud.reserve(500000); //Preallocate space for points
-    }
-
-    for (int r = 0; r < imageSegmentedByObjectIdsCroped.rows; ++r)
-    {
-        const uint16_t* row_ptr = imageSegmentedByObjectIdsCroped.ptr<uint16_t>(r);
-
-        for (int c = 0; c < imageSegmentedByObjectIdsCroped.cols; ++c)
-        {
-            if (row_ptr[c] == 0)
-            {
-                continue; //Background class, skip
-            }
-
-            const auto objectClassIndex = row_ptr[c] - 1; //Assuming class IDs start from 1
-
-            geometry_msgs::msg::Point32 point;
-            const auto& pointInWorld = coordinatesInWorldAs4ChannelsCroped.at<cv::Vec4f>(r,c);
-            point.x = pointInWorld[0];
-            point.y = pointInWorld[1];
-            point.z = pointInWorld[2];
-            pointsPerObject[objectClassIndex].emplace_back(std::move(point));
-            
-        }
-    }
-    
-    auto timeEndTransformation = clock::now();
-    auto durationOptimization = std::chrono::duration_cast<std::chrono::microseconds>(timeEndTransformation - timeStartTransformation).count();
-    RCLCPP_INFO(this->get_logger(), "Transformed points to world frame in %ld microseconds", durationOptimization);
-
-    /*/
-    std::ofstream ofs(pathFilePointCloudForDebug);
-    if (ofs.is_open())
-    {
-        for (auto objectId{0}; objectId < numberOfObjects; ++objectId)
-        {         
-            const auto classId = msg->list_of_classes[objectId];
-            for (const auto& point : pointsPerObject[objectId])
-            {
-                ofs << point.x << " " << point.y << " " << point.z  << " "<< classId << "\n";
-            }
-        }
-        ofs.close();
-        RCLCPP_INFO(this->get_logger(), "Saved point cloud for class 0 to %s", pathFilePointCloudForDebug.c_str());
-    }
-    */
-
-    //Depth map correciton using regressino results
-
-    //Forming a 3-channel CV32FC3 array with xyz coordinates
-
-    ////reshape this array to a pointcloud layout:
-    //CV_Assert(xyz.type() == CV_32FC3);
-    //CV_Assert(xyz.isContinuous());  // important!
-    //int N = xyz.rows * xyz.cols;
+    //        auto timeStartTransformation = clock::now();
 //
-    //// Now: N rows, 3 columns, 1 channel
-    //cv::Mat points_Nx3 = xyz.reshape(1, N);
+    //        cv::Mat imageSegmentedByObjectIds (msg->rows, msg->columns, CV_16UC1, msg->image_segmented_by_classes.data() ); //Initialize with zeros
+    //        const auto numberOfObjects{msg->number_of_objects};
+//
+    //        for (auto classId: msg->list_of_classes)
+    //        {
+    //            RCLCPP_INFO(this->get_logger(), "Detected object with class id %d", classId);
+    //        }
+//
+//
+    //        if (m_isTheFirstFrameBeingProcessed)
+    //        {
+    //            cv::Mat yRange(msg->rows, 1, CV_32F);
+    //            for (unsigned int i = 0; i < msg->rows; ++i)
+    //            {
+    //                yRange.at<float>(i, 0) = static_cast<float>(i);
+    //            }
+//
+    //            cv::Mat xRange(1, msg->columns, CV_32F);
+    //            for (unsigned int j = 0; j < msg->columns; ++j)
+    //            {
+    //                xRange.at<float>(0, j) = static_cast<float>(j);
+    //            }
+//
+    //            m_imageCoordinatesY = cv::repeat(yRange, 1, msg->columns) - static_cast<float>(msg->rows)/2.0f + 0.5f;
+    //            m_imageCoordinatesX = cv::repeat(xRange, msg->rows, 1) - static_cast<float>(msg->columns)/2.0f + 0.5f;
+    //            m_ones = cv::Mat::ones(msg->rows, msg->columns, CV_32F);
+    //        }
+//
+    //        //RCLCPP_INFO(this->get_logger(), "Focal length for left camera is: %f %f", msg->focal_length_left[0], msg->focal_length_left[1]);
+//
+    //        cv::Mat cameraFrameCoordinatesX;
+    //        cv::Mat cameraFrameCoordinatesY;
+    //        cv::multiply(m_imageCoordinatesX, depthMapAfterLinearCorrection, cameraFrameCoordinatesX, (1.0f / msg->focal_length_left[0]));
+    //        cv::multiply(m_imageCoordinatesY, depthMapAfterLinearCorrection, cameraFrameCoordinatesY, (1.0f / msg->focal_length_left[1]));
+//
+    //        CV_Assert(m_imageCoordinatesX.size() == depthMapAfterLinearCorrection.size() && m_imageCoordinatesY.size() == depthMapAfterLinearCorrection.size());
+    //        cv::Mat coordinateAs4Channels = cv::Mat(msg->rows, msg->columns, CV_32FC4);
+//
+    //        auto timeStartInsertingChannels = clock::now();
+//
+    //        cv::insertChannel(cameraFrameCoordinatesX, coordinateAs4Channels, 0);
+    //        cv::insertChannel(cameraFrameCoordinatesY, coordinateAs4Channels, 1);
+    //        cv::insertChannel(depthMapAfterLinearCorrection, coordinateAs4Channels, 2);
+    //        cv::insertChannel(m_ones, coordinateAs4Channels, 3);
+//
+    //        auto timeEndInsertingChannels = clock::now();
+    //        auto durationInsertingChannels = std::chrono::duration_cast<std::chrono::microseconds>(timeEndInsertingChannels - timeStartInsertingChannels).count();
+    //        RCLCPP_INFO(this->get_logger(), "Inserted channels into 4-channel matrix in %ld microseconds", durationInsertingChannels);
+    //        // Alternatively:
+    //        //cv::merge(std::vector<cv::Mat>{cameraFrameCoordinatesX, cameraFrameCoordinatesY, depthMapAfterLinearCorrection, m_ones}  , coordinateAs4Channels);
+//
+    //        CV_Assert(coordinateAs4Channels.isContinuous());
+    //        const auto numberOfPixels {coordinateAs4Channels.rows * coordinateAs4Channels.cols};
+    //        cv::Mat points4xN = coordinateAs4Channels.reshape(1, numberOfPixels).t(); //Now: N rows, 4 columns, 1 channel
+//
+    //        /*
+    //        std::ofstream ofsBefore("pointcloud_before_transformation_" + std::to_string(m_frameCounter) + ".txt");
+    //        if (ofsBefore.is_open())
+    //        {
+    //            for (int i = 0; i < points4xN.cols; ++i)
+    //            {
+    //                ofsBefore << points4xN.at<float>(0,i) << " " << points4xN.at<float>(1,i) << " " << points4xN.at<float>(2,i) << "\n";
+    //            }
+    //            ofsBefore.close();
+    //            RCLCPP_INFO(this->get_logger(), "Saved point cloud before transformation to pointcloud_before_transformation_%d.txt", m_frameCounter);
+    //        }
+    //        */
+//
+    //        cv::Quatd quaternion{msg->pose.pose.orientation.w, msg->pose.pose.orientation.x, msg->pose.pose.orientation.y, msg->pose.pose.orientation.z};
+    //        cv::Mat transformationMatrix = cv::Mat(quaternion.toRotMat4x4());
+    //        transformationMatrix.convertTo(transformationMatrix, CV_32F);
+//
+    //        //std::cout << "Transformation matrix: \n" << transformationMatrix << std::endl;
+    //        transformationMatrix.at<float>(0,3) = static_cast<float>(msg->pose.pose.position.x);
+    //        transformationMatrix.at<float>(1,3) = static_cast<float>(msg->pose.pose.position.y);
+    //        transformationMatrix.at<float>(2,3) = static_cast<float>(msg->pose.pose.position.z);
+    //        transformationMatrix.convertTo(transformationMatrix, CV_32F);
+//
+    //        auto timeStartMatrixMultiplication= clock::now();
+    //        cv::Mat points4xNTransformed = (transformationMatrix* points4xN).t();
+    //        auto timeEndMatrixMultiplication = clock::now();
+    //        auto durationMatrixMultiplication = std::chrono::duration_cast<std::chrono::microseconds>(timeEndMatrixMultiplication - timeStartMatrixMultiplication).count();
+    //        RCLCPP_INFO(this->get_logger(), "Matrix multiplication took %ld microseconds", durationMatrixMultiplication);
+//
+//
+//
+    //        cv::Mat coordinatesInWorldAs4Channels = points4xNTransformed.reshape(4).reshape(4, msg->rows);
+//
+    //        cv::Rect roi(msg->depth_map_col_min, msg->depth_map_row_min, msg->depth_map_col_max - msg->depth_map_col_min, msg->depth_map_row_max - msg->depth_map_row_min);
+//
+    //        cv::Mat coordinatesInWorldAs4ChannelsCroped = coordinatesInWorldAs4Channels(roi).clone();
+    //        cv::Mat imageSegmentedByObjectIdsCroped = imageSegmentedByObjectIds(roi).clone();
+//
+    //        RCLCPP_INFO(this->get_logger(), "Cropped coordinate matrix is of size: rows=%d, cols=%d", coordinatesInWorldAs4ChannelsCroped.rows, coordinatesInWorldAs4ChannelsCroped.cols);
+    //        RCLCPP_INFO(this->get_logger(), "Image segmented by object IDs size: rows=%d, cols=%d", imageSegmentedByObjectIdsCroped.rows, imageSegmentedByObjectIdsCroped.cols);
+//
+    //        std::vector<std::vector<geometry_msgs::msg::Point32>> pointsPerObject(numberOfObjects);
+//
+//
+    //        for (auto pointCloud: pointsPerObject)
+    //        {
+    //            pointCloud.reserve(500000); //Preallocate space for points
+    //        }
+//
+    //        for (int r = 0; r < imageSegmentedByObjectIdsCroped.rows; ++r)
+    //        {
+    //            const uint16_t* row_ptr = imageSegmentedByObjectIdsCroped.ptr<uint16_t>(r);
+//
+    //            for (int c = 0; c < imageSegmentedByObjectIdsCroped.cols; ++c)
+    //            {
+    //                if (row_ptr[c] == 0)
+    //                {
+    //                    continue; //Background class, skip
+    //                }
+//
+    //                const auto objectClassIndex = row_ptr[c] - 1; //Assuming class IDs start from 1
+//
+    //                geometry_msgs::msg::Point32 point;
+    //                const auto& pointInWorld = coordinatesInWorldAs4ChannelsCroped.at<cv::Vec4f>(r,c);
+    //                point.x = pointInWorld[0];
+    //                point.y = pointInWorld[1];
+    //                point.z = pointInWorld[2];
+    //                pointsPerObject[objectClassIndex].emplace_back(std::move(point));
+    //                
+    //            }
+    //        }
+    //        
+    //        auto timeEndTransformation = clock::now();
+    //        auto durationOptimization = std::chrono::duration_cast<std::chrono::microseconds>(timeEndTransformation - timeStartTransformation).count();
+    //        RCLCPP_INFO(this->get_logger(), "Transformed points to world frame in %ld microseconds", durationOptimization);
+//
+    //        /*/
+    //        std::ofstream ofs(pathFilePointCloudForDebug);
+    //        if (ofs.is_open())
+    //        {
+    //            for (auto objectId{0}; objectId < numberOfObjects; ++objectId)
+    //            {         
+    //                const auto classId = msg->list_of_classes[objectId];
+    //                for (const auto& point : pointsPerObject[objectId])
+    //                {
+    //                    ofs << point.x << " " << point.y << " " << point.z  << " "<< classId << "\n";
+    //                }
+    //            }
+    //            ofs.close();
+    //            RCLCPP_INFO(this->get_logger(), "Saved point cloud for class 0 to %s", pathFilePointCloudForDebug.c_str());
+    //        }
+    //        */
+//
+    //        //Depth map correciton using regressino results
+//
+    //        //Forming a 3-channel CV32FC3 array with xyz coordinates
+//
+    //        ////reshape this array to a pointcloud layout:
+    //        //CV_Assert(xyz.type() == CV_32FC3);
+    //        //CV_Assert(xyz.isContinuous());  // important!
+    //        //int N = xyz.rows * xyz.cols;
+    //        //
+    //        //// Now: N rows, 3 columns, 1 channel
+    //        //cv::Mat points_Nx3 = xyz.reshape(1, N);
 
-
+    
 
     m_isTheFirstFrameBeingProcessed = false;
     m_frameCounter++;
+}
+
+std::string DepthOptimizerNode::stampToString(builtin_interfaces::msg::Time stamp) const
+{
+    std::ostringstream oss;
+    oss << std::setw(9) << std::setfill('0') << stamp.nanosec;
+    std::string timeInformationStr {std::to_string(stamp.sec) + "_" +  oss.str()};
+    return timeInformationStr;
 }
 
 
