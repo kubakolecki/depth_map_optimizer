@@ -78,7 +78,7 @@ SolutionResult DepthMapOptimizationProblem::solve()
     options.sparse_linear_algebra_library_type = ceres::SUITE_SPARSE;
     options.linear_solver_type = ceres::SPARSE_NORMAL_CHOLESKY;
     //options.linear_solver_type = ceres::CGNR;
-    options.minimizer_progress_to_stdout = true;
+    options.minimizer_progress_to_stdout = false;
     options.max_num_iterations = m_config.numberOfCeresIterations;
     options.num_threads = 24;
 

@@ -25,6 +25,7 @@
 DepthOptimizerNode::DepthOptimizerNode(): Node("depth_optimizer_node")
 {
     auto paramMappingDataTopicNameDescription{rcl_interfaces::msg::ParameterDescriptor{}};
+    auto paramMinNumberOfMapPointsDescription{rcl_interfaces::msg::ParameterDescriptor{}};
     auto paramNumberOfThreadsDescription{rcl_interfaces::msg::ParameterDescriptor{}};
     auto paramNumberOfCeresIterationsDescription{rcl_interfaces::msg::ParameterDescriptor{}};
     auto paramCeresLossFunctionDepthMapDescription{rcl_interfaces::msg::ParameterDescriptor{}};
@@ -39,6 +40,7 @@ DepthOptimizerNode::DepthOptimizerNode(): Node("depth_optimizer_node")
     auto paramRegressionOutlierProbabilityDescription{rcl_interfaces::msg::ParameterDescriptor{}};
 
     paramMappingDataTopicNameDescription.description = "topic name for mapping data message";
+    paramMinNumberOfMapPointsDescription.description = "minimum number of map points for optimization";
     paramNumberOfThreadsDescription.description = "number of threads for OpenCV operations";
     paramNumberOfCeresIterationsDescription.description = "number of iterations for ceres optimization";
     paramCeresLossFunctionDepthMapDescription.description = "loss function for depth map optimization, possible values: TRIVIAL, CAUCHY, HUBER, TUKEY";
@@ -53,6 +55,7 @@ DepthOptimizerNode::DepthOptimizerNode(): Node("depth_optimizer_node")
     paramRegressionOutlierProbabilityDescription.description = "probability that the sample of linear regression is an outlier";
 
     this->declare_parameter<std::string>("mapping_data_topic_name","'slam_deep_mapper/mapping_data'", paramMappingDataTopicNameDescription);
+    this->declare_parameter<int>("min_number_of_map_points", 20, paramMinNumberOfMapPointsDescription);
     this->declare_parameter<int>("opencv_number_of_threads",16, paramNumberOfThreadsDescription);
     this->declare_parameter<int>("number_of_ceres_iterations",4, paramNumberOfCeresIterationsDescription);
     this->declare_parameter<std::string>("ceres_loss_function_depth_map","HUBER", paramCeresLossFunctionDepthMapDescription);
@@ -70,6 +73,7 @@ DepthOptimizerNode::DepthOptimizerNode(): Node("depth_optimizer_node")
         std::bind(&DepthOptimizerNode::imageBasedMappingDataCallback, this, std::placeholders::_1)
     );
 
+    m_minNumberOfMapPoints = this->get_parameter("min_number_of_map_points").as_int();
     m_depthMapOptimizationConfig.numberOfCeresIterations = this->get_parameter("number_of_ceres_iterations").as_int();
 
     const auto nameOfLossFunctionDepthMap = this->get_parameter("ceres_loss_function_depth_map").as_string();
@@ -98,12 +102,14 @@ DepthOptimizerNode::DepthOptimizerNode(): Node("depth_optimizer_node")
 
     if (m_doSaveDepthMaps && !std::filesystem::exists(m_pathDepthMaps))
     {
-        RCLCPP_FATAL(this->get_logger(), "Directory pointed to store depth maps in, does not exitst!");
+        RCLCPP_WARN(this->get_logger(), "Directory pointed to save depth maps in, does not exist. Creating directory...");
+        std::filesystem::create_directories(m_pathDepthMaps);
     }
 
     if (m_doSaveOptimizationReports && !std::filesystem::exists(m_pathOptimizationReports))
     {
-        RCLCPP_FATAL(this->get_logger(), "Directory pointed to store optimization reports in, does not exitst!");
+        RCLCPP_WARN(this->get_logger(), "Directory pointed to save optimization reports in, does not exist. Creating directory...");
+        std::filesystem::create_directories(m_pathOptimizationReports);
     }
 
 }
@@ -138,7 +144,11 @@ void DepthOptimizerNode::imageBasedMappingDataCallback(const ros_common_messages
     using clock = std::chrono::high_resolution_clock;
     RCLCPP_INFO(this->get_logger(), "Received ImageBasedMappingData message with: %d objects", msg->number_of_objects);
 
-
+    if (msg->sparse_depth_information.points.size() < static_cast<size_t>(m_minNumberOfMapPoints))
+    {
+        RCLCPP_WARN(this->get_logger(), "Number of map points in sparse depth information is less than the minimum required for optimization. Skipping optimization for this frame.");
+        return;
+    }
 
     //std::string pathFilePointCloudForDebug = "pointcloud_" + std::to_string(m_frameCounter) + "_" + std::to_string(msg->number_of_objects) + ".txt";
 

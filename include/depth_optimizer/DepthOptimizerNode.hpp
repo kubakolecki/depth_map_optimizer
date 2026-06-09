@@ -24,6 +24,8 @@ private:
     cv::Mat m_imageCoordinatesY; 
     cv::Mat m_imageCoordinatesX;
     cv::Mat m_ones;
+
+    int m_minNumberOfMapPoints{20};
     
     bool m_isTheFirstFrameBeingProcessed{true};
     int m_frameCounter{0};
