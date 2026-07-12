@@ -19,6 +19,7 @@ private:
     rclcpp::Subscription<ros_common_messages::msg::ImageBasedMappingData>::SharedPtr imageBasedMappingDataSubscriber;
     void imageBasedMappingDataCallback(const ros_common_messages::msg::ImageBasedMappingData::SharedPtr msg);
     depth_map_optimization::LossFunctionDescription createLossFunctionDescription(const std::string& lossFunctionString, const double parameter) const;
+    cv::Point2f computeLabelCentroid(const cv::Mat& labels, uint16_t label) const;
     std::unique_ptr<RobustLinearRegression> m_robustLinearRegression;
 
     cv::Mat m_imageCoordinatesY; 
@@ -35,6 +36,7 @@ private:
     std::filesystem::path m_pathOptimizationReports{""};
     bool m_doSaveDepthMaps{false};
     bool m_doSaveOptimizationReports{false};
+    bool m_doRunRigorousOptimization{true};
 
     std::string stampToString(builtin_interfaces::msg::Time stamp) const;
 

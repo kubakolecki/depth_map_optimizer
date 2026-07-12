@@ -6,9 +6,11 @@
 
 #include <opencv2/opencv.hpp>
 #include <ceres/problem.h>
+#include <ceres/ceres.h>
 
 
 #include <vector>
+#include <memory>
 
 
 namespace depth_map_optimization
@@ -42,6 +44,8 @@ class DepthMapOptimizationProblem
         };
 
         ceres::LossFunction* createLossFunction(const LossFunctionDescription& lossFunctionDescription) const;
+
+        std::vector<ceres::LossFunctionWrapper*> m_lossFunctionWrappersForMapPoints;
 
         cv::Mat& m_depthMapOriginal;
         double m_slope{1.0};

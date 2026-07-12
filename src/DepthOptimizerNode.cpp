@@ -27,11 +27,19 @@ DepthOptimizerNode::DepthOptimizerNode(): Node("depth_optimizer_node")
     auto paramMappingDataTopicNameDescription{rcl_interfaces::msg::ParameterDescriptor{}};
     auto paramMinNumberOfMapPointsDescription{rcl_interfaces::msg::ParameterDescriptor{}};
     auto paramNumberOfThreadsDescription{rcl_interfaces::msg::ParameterDescriptor{}};
+    
     auto paramNumberOfCeresIterationsDescription{rcl_interfaces::msg::ParameterDescriptor{}};
+    auto paramNumberOfCeresIterationsSecondStepDescription{rcl_interfaces::msg::ParameterDescriptor{}};
+
+    auto paramMapPointDifferenceThresholdDescription{rcl_interfaces::msg::ParameterDescriptor{}};
+
     auto paramCeresLossFunctionDepthMapDescription{rcl_interfaces::msg::ParameterDescriptor{}};
     auto paramCeresLossFunctionDepthMapParameterDescription{rcl_interfaces::msg::ParameterDescriptor{}};
     auto paramCeresLossFunctionMapPointsDescription{rcl_interfaces::msg::ParameterDescriptor{}};
     auto paramCeresLossFunctionMapPointsParameterDescription{rcl_interfaces::msg::ParameterDescriptor{}};
+    auto paramCeresLossFunctionMapPointsSecondStepDescription{rcl_interfaces::msg::ParameterDescriptor{}};
+    auto paramCeresLossFunctionMapPointsParameterSecondStepDescription{rcl_interfaces::msg::ParameterDescriptor{}};
+
     auto paramDoSaveDepthMapsToFilesDescription{rcl_interfaces::msg::ParameterDescriptor{}};
     auto paramDoSaveOptmizationReportsDescription{rcl_interfaces::msg::ParameterDescriptor{}};
     auto paramPathToDepthmapDirectoryDescription{rcl_interfaces::msg::ParameterDescriptor{}};
@@ -39,14 +47,24 @@ DepthOptimizerNode::DepthOptimizerNode(): Node("depth_optimizer_node")
     auto paramRegressionOutlierThresholdDescription{rcl_interfaces::msg::ParameterDescriptor{}};
     auto paramRegressionOutlierProbabilityDescription{rcl_interfaces::msg::ParameterDescriptor{}};
 
+    auto paramDoRunRigorousOptimizationDescription{rcl_interfaces::msg::ParameterDescriptor{}};
+
     paramMappingDataTopicNameDescription.description = "topic name for mapping data message";
     paramMinNumberOfMapPointsDescription.description = "minimum number of map points for optimization";
     paramNumberOfThreadsDescription.description = "number of threads for OpenCV operations";
+
     paramNumberOfCeresIterationsDescription.description = "number of iterations for ceres optimization";
+    paramNumberOfCeresIterationsSecondStepDescription.description = "number of iterations for ceres optimization in the second step";
+
+    paramMapPointDifferenceThresholdDescription.description = "if the difference between depth map and map point is greater than this threshold, the map point is not used for optimization";
+
     paramCeresLossFunctionDepthMapDescription.description = "loss function for depth map optimization, possible values: TRIVIAL, CAUCHY, HUBER, TUKEY";
     paramCeresLossFunctionDepthMapParameterDescription.description = "parameter for the loss function for depth map optimization";
     paramCeresLossFunctionMapPointsDescription.description = "loss function for map points optimization, possible values: TRIVIAL, CAUCHY, HUBER, TUKEY";
     paramCeresLossFunctionMapPointsParameterDescription.description = "parameter for the loss function for map points optimization";
+    paramCeresLossFunctionMapPointsSecondStepDescription.description = "loss function for map points optimization in the second step, possible values: TRIVIAL, CAUCHY, HUBER, TUKEY";
+    paramCeresLossFunctionMapPointsParameterSecondStepDescription.description = "parameter for the loss function for map points optimization in the second step"; 
+    
     paramDoSaveDepthMapsToFilesDescription.description = "if true, saves depth maps to file in the specified directories";
     paramDoSaveOptmizationReportsDescription.description = "if true, saves optimization reports to file in the specified directories";
     paramPathToDepthmapDirectoryDescription.description = "path to the directory, where depth maps will be saved";
@@ -54,14 +72,24 @@ DepthOptimizerNode::DepthOptimizerNode(): Node("depth_optimizer_node")
     paramRegressionOutlierThresholdDescription.description = "threshold for RANSAC step in robust regression algorithm";
     paramRegressionOutlierProbabilityDescription.description = "probability that the sample of linear regression is an outlier";
 
+    paramDoRunRigorousOptimizationDescription.description = "if true, runs rigorous optimization, which is slower but more accurate, if false, runs only linear regression";
+
     this->declare_parameter<std::string>("mapping_data_topic_name","'slam_deep_mapper/mapping_data'", paramMappingDataTopicNameDescription);
     this->declare_parameter<int>("min_number_of_map_points", 20, paramMinNumberOfMapPointsDescription);
     this->declare_parameter<int>("opencv_number_of_threads",16, paramNumberOfThreadsDescription);
+
     this->declare_parameter<int>("number_of_ceres_iterations",4, paramNumberOfCeresIterationsDescription);
+    this->declare_parameter<int>("number_of_ceres_iterations_second_step",4, paramNumberOfCeresIterationsSecondStepDescription);
+    
+    this->declare_parameter<float>("map_point_difference_threshold", 0.5, paramMapPointDifferenceThresholdDescription);
+
     this->declare_parameter<std::string>("ceres_loss_function_depth_map","HUBER", paramCeresLossFunctionDepthMapDescription);
     this->declare_parameter<double>("ceres_loss_function_depth_map_parameter", 2.0, paramCeresLossFunctionDepthMapParameterDescription);
     this->declare_parameter<std::string>("ceres_loss_function_map_points","HUBER", paramCeresLossFunctionMapPointsDescription);
     this->declare_parameter<double>("ceres_loss_function_map_points_parameter", 1.0, paramCeresLossFunctionMapPointsParameterDescription);
+    this->declare_parameter<std::string>("ceres_loss_function_map_points_second_step","HUBER", paramCeresLossFunctionMapPointsSecondStepDescription);
+    this->declare_parameter<double>("ceres_loss_function_map_points_second_step_parameter", 1.0, paramCeresLossFunctionMapPointsParameterSecondStepDescription);
+
     this->declare_parameter<bool>("do_save_depth_maps_to_files", false, paramDoSaveDepthMapsToFilesDescription);
     this->declare_parameter<bool>("do_save_optimization_reports_to_files", false, paramDoSaveOptmizationReportsDescription);
     this->declare_parameter<std::string>("path_to_depthmap_directory","", paramPathToDepthmapDirectoryDescription);
@@ -69,21 +97,29 @@ DepthOptimizerNode::DepthOptimizerNode(): Node("depth_optimizer_node")
     this->declare_parameter<double>("regression_outlier_threshold",0.2, paramRegressionOutlierThresholdDescription);
     this->declare_parameter<double>("regression_outlier_probability",0.5, paramRegressionOutlierProbabilityDescription);
 
+    this->declare_parameter<bool>("do_run_rigorous_optimization", true, paramDoRunRigorousOptimizationDescription);
+
     imageBasedMappingDataSubscriber = this->create_subscription<ros_common_messages::msg::ImageBasedMappingData>(this->get_parameter("mapping_data_topic_name").as_string(),10,
         std::bind(&DepthOptimizerNode::imageBasedMappingDataCallback, this, std::placeholders::_1)
     );
 
     m_minNumberOfMapPoints = this->get_parameter("min_number_of_map_points").as_int();
     m_depthMapOptimizationConfig.numberOfCeresIterations = this->get_parameter("number_of_ceres_iterations").as_int();
-
+    m_depthMapOptimizationConfig.numberOfCeresIterationsSecondStep = this->get_parameter("number_of_ceres_iterations_second_step").as_int();
+    m_depthMapOptimizationConfig.mapPointDifferenceThreshold = this->get_parameter("map_point_difference_threshold").as_double();
+    
     const auto nameOfLossFunctionDepthMap = this->get_parameter("ceres_loss_function_depth_map").as_string();
     const auto nameOfLossFunctionMapPoints = this->get_parameter("ceres_loss_function_map_points").as_string();
+    const auto nameOfLossFunctionMapPointsSecondStep = this->get_parameter("ceres_loss_function_map_points_second_step").as_string();
     const auto parameterOfLossFunctionDepthMap = this->get_parameter("ceres_loss_function_depth_map_parameter").as_double();
     const auto parameterOfLossFunctionMapPoints = this->get_parameter("ceres_loss_function_map_points_parameter").as_double();
+    const auto parameterOfLossFunctionMapPointsSecondStep = this->get_parameter("ceres_loss_function_map_points_second_step_parameter").as_double();
+
+    m_doRunRigorousOptimization = this->get_parameter("do_run_rigorous_optimization").as_bool();
 
     m_depthMapOptimizationConfig.ceresLossFunctionForDepthMap = createLossFunctionDescription(nameOfLossFunctionDepthMap, parameterOfLossFunctionDepthMap);
     m_depthMapOptimizationConfig.ceresLossFunctionForMapPoints = createLossFunctionDescription(nameOfLossFunctionMapPoints, parameterOfLossFunctionMapPoints);
-
+    m_depthMapOptimizationConfig.ceresLossFunctionForMapPointsSecondStep = createLossFunctionDescription(nameOfLossFunctionMapPointsSecondStep, parameterOfLossFunctionMapPointsSecondStep);
     //TODO: looks like this is not needed to be set, OpenCV uses all available threads by default, remove later
     //cv::setNumThreads(this->get_parameter("opencv_number_of_threads").as_int()); //TODO test if this works, also test this in other nodes
 
@@ -237,37 +273,65 @@ void DepthOptimizerNode::imageBasedMappingDataCallback(const ros_common_messages
     cv::Mat depthMapToOptmize;
     depthMapAfterLinearCorrection.convertTo(depthMapToOptmize, CV_64F);
 
-    m_depthMapOptimizationConfig.roi = depth_map_optimization::DepthMapOptimizationRoi{msg->depth_map_row_min, msg->depth_map_row_max, msg->depth_map_col_min, msg->depth_map_col_max};
-    m_depthMapOptimizationConfig.scaleFactorForDepthMap = 4;
-    
-    depth_map_optimization::DepthMapOptimizationProblem depthMapOptimizationProblem(depthMapToOptmize, 1.0, m_depthMapOptimizationConfig);
-
-
-    depthMapOptimizationProblem.fillOptimizationProblem(msg->sparse_depth_information.points);
-    const auto optimizationResult{depthMapOptimizationProblem.solve()};
-
-
     cv::Mat depthMapAfterOptmization;
-    depthMapToOptmize.convertTo(depthMapAfterOptmization, CV_32F);
 
-    if (m_doSaveDepthMaps)
+    if (m_doRunRigorousOptimization)
     {
-        cv::imwrite((m_pathDepthMaps / ("depth_map_optimized_" + stampToString(msg->pose.header.stamp) + ".tif")).string(), depthMapAfterOptmization);
+
+        m_depthMapOptimizationConfig.roi = depth_map_optimization::DepthMapOptimizationRoi{msg->depth_map_row_min, msg->depth_map_row_max, msg->depth_map_col_min, msg->depth_map_col_max};
+        m_depthMapOptimizationConfig.scaleFactorForDepthMap = 4;
+        
+        depth_map_optimization::DepthMapOptimizationProblem depthMapOptimizationProblem{depthMapToOptmize, 1.0, m_depthMapOptimizationConfig};
+
+
+        depthMapOptimizationProblem.fillOptimizationProblem(msg->sparse_depth_information.points);
+        const auto optimizationResult{depthMapOptimizationProblem.solve()};
+        
+        depthMapToOptmize.convertTo(depthMapAfterOptmization, CV_32F);
+
+        if (m_doSaveDepthMaps)
+        {
+            cv::imwrite((m_pathDepthMaps / ("depth_map_optimized_" + stampToString(msg->pose.header.stamp) + ".tif")).string(), depthMapAfterOptmization);
+        }
+
+        RCLCPP_INFO(this->get_logger(), "Slope after optimization: %f", 1.0/depthMapOptimizationProblem.getSlope());
+
+        const auto depthResiduals{depthMapOptimizationProblem.evaluateDepthResiduals(msg->sparse_depth_information.points)};
+
+        if (m_doSaveOptimizationReports)
+        {
+            const auto pathFileReport{m_pathOptimizationReports / ("optimization_report_" + stampToString(msg->pose.header.stamp) + ".txt")};
+            std::ofstream fileReport{pathFileReport};
+            depth_optmizer_io::sendToStream(fileReport, optimizationResult);
+            fileReport <<"\n";
+            depth_optmizer_io::sendToStream(fileReport, depthResiduals); 
+            fileReport.close();
+        }
+    }
+    else
+    {
+        depthMapAfterOptmization = depthMapAfterLinearCorrection;
     }
 
-    RCLCPP_INFO(this->get_logger(), "Slope after optimization: %f", 1.0/depthMapOptimizationProblem.getSlope());
-
-    const auto depthResiduals{depthMapOptimizationProblem.evaluateDepthResiduals(msg->sparse_depth_information.points)};
-
-    if (m_doSaveOptimizationReports)
+    cv::Mat imageSegmentedByObjectIds (msg->rows, msg->columns, CV_16UC1, msg->image_segmented_by_classes.data() );
+    for (auto [id, classId]: std::views::enumerate(msg->list_of_classes))
     {
-        const auto pathFileReport{m_pathOptimizationReports / ("optimization_report_" + stampToString(msg->pose.header.stamp) + ".txt")};
-        std::ofstream fileReport{pathFileReport};
-        depth_optmizer_io::sendToStream(fileReport, optimizationResult);
-        fileReport <<"\n";
-        depth_optmizer_io::sendToStream(fileReport, depthResiduals); 
-        fileReport.close();
+        RCLCPP_INFO(this->get_logger(), "Detected object %ld : %d", id, classId);
+
+        const auto labelCentroid {computeLabelCentroid(imageSegmentedByObjectIds, id)};
+        const auto depthValueAtCentroid {depthMapAfterOptmization.at<float>(static_cast<int>(labelCentroid.y), static_cast<int>(labelCentroid.x))};
+        //RCLCPP_INFO(this->get_logger(), "Centroid of classId %d: (%f, %f), depth value at centroid: %f", classId, labelCentroid.x, labelCentroid.y, depthValueAtCentroid);
+
+        cv::Vec3f rayToObject;
+        rayToObject[0] = (labelCentroid.x - static_cast<float>(msg->columns)/2.0f + 0.5f) / msg->focal_length_left[0];
+        rayToObject[1] = (labelCentroid.y - static_cast<float>(msg->rows)/2.0f + 0.5f) / msg->focal_length_left[1];
+        rayToObject[2] = 1.0f;
+
+        rayToObject /= cv::norm(rayToObject);
+        RCLCPP_INFO(this->get_logger(), "Ray to object %d: (%f, %f, %f), depth: %f", classId, rayToObject[0], rayToObject[1], rayToObject[2], depthValueAtCentroid);
+
     }
+
 
 
     //BELOW WE GENERATE POINTCLOUDS FOR OBJECTS DETECTED BY YOLO, AND WE TRANSFORM THOSE CLOUDS TO WORLD FRAME
@@ -449,6 +513,38 @@ std::string DepthOptimizerNode::stampToString(builtin_interfaces::msg::Time stam
     oss << std::setw(9) << std::setfill('0') << stamp.nanosec;
     std::string timeInformationStr {std::to_string(stamp.sec) + "_" +  oss.str()};
     return timeInformationStr;
+}
+
+cv::Point2f DepthOptimizerNode::computeLabelCentroid(const cv::Mat& labels, uint16_t label) const
+{
+    CV_Assert(labels.type() == CV_16UC1);
+
+    auto sumX {0ull};
+    auto sumY {0ull};
+    size_t count {0};
+
+    for (int y = 0; y < labels.rows; ++y)
+    {
+        const uint16_t* row = labels.ptr<uint16_t>(y);
+
+        for (int x = 0; x < labels.cols; ++x)
+        {
+            if (row[x] == label)
+            {
+                sumX += x;
+                sumY += y;
+                ++count;
+            }
+        }
+    }
+
+    if (count == 0)
+    {
+        // Label not found.
+        return cv::Point2f(-1.0f, -1.0f);
+    }
+
+    return cv::Point2f(static_cast<float>(sumX) / static_cast<float>(count), static_cast<float>(sumY) / static_cast<float>(count));
 }
 
 

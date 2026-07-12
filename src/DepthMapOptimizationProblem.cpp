@@ -25,6 +25,9 @@ void DepthMapOptimizationProblem::fillOptimizationProblem(const std::vector<geom
     
     using clock = std::chrono::high_resolution_clock;
     auto timeStartT = clock::now();
+    m_lossFunctionWrappersForMapPoints.clear();
+    //m_lossFunctionWrappersForMapPoints.reserve(observedDepthMapPoints.size());
+
     const auto rowLimit {m_roiDecimated.rowMax - 1u};
     const auto colLimit {m_roiDecimated.colMax - 1u};
     for (auto row = m_roiDecimated.rowMin; row < rowLimit; ++row) 
@@ -50,17 +53,55 @@ void DepthMapOptimizationProblem::fillOptimizationProblem(const std::vector<geom
     for (const auto& point: observedDepthMapPoints)
     {
         
-        if (point.y < m_config.roi.rowMin || point.y >= m_config.roi.rowMax || point.x < m_config.roi.colMin || point.x >= m_config.roi.colMax)
+        if (point.y < m_config.roi.rowMin)
         {
             continue;
         }
-        
+
+        if (point.y >= m_config.roi.rowMax)
+        {
+            continue;
+        }
+
+        if (point.x < m_config.roi.colMin)
+        {
+            continue;
+        }
+
+        if (point.x >= m_config.roi.colMax)
+        {
+            continue;
+        }
+
         const auto row = static_cast<unsigned int>(point.y/ static_cast<double>(m_config.scaleFactorForDepthMap));
         const auto col = static_cast<unsigned int>(point.x/ static_cast<double>(m_config.scaleFactorForDepthMap));
 
+        const auto depthAtPoint = m_depthMapDecimatedToOptimize.at<double>(row, col);
+        const auto depthDifference = std::abs(depthAtPoint - point.z);
+        if (depthDifference > m_config.mapPointDifferenceThreshold)
+        {
+            std::cout << "Skipping point at (" << point.x << ", " << point.y << ") with depth " << point.z << " because the difference with the depth map value " << depthAtPoint << " is too large: " << depthDifference << std::endl; 
+            continue;
+        }
+        
         ceres::CostFunction* depthCostFunction = new DepthCostFunction(point.z, 0.05 * point.z);
-        ceres::LossFunction* lossFunction = this->createLossFunction(m_config.ceresLossFunctionForMapPoints);
-        m_problem.AddResidualBlock(depthCostFunction, lossFunction, &m_depthMapDecimatedToOptimize.at<double>(row, col));
+        //ceres::LossFunction* lossFunction = this->createLossFunction(m_config.ceresLossFunctionForMapPoints);
+        //auto lossFunctionWrapper =  std::make_shared<ceres::LossFunctionWrapper>(this->createLossFunction(m_config.ceresLossFunctionForMapPoints), ceres::Ownership::TAKE_OWNERSHIP);
+        //m_lossFunctionWrappersForMapPoints.emplace_back(lossFunctionWrapper);
+
+        //m_problem.AddResidualBlock(depthCostFunction, lossFunction, &m_depthMapDecimatedToOptimize.at<double>(row, col));
+
+        //m_problem.AddResidualBlock(depthCostFunction, lossFunctionWrapper.get(), &m_depthMapDecimatedToOptimize.at<double>(row, col));
+
+        //auto lossFncWrapper = ceres::LossFunctionWrapper(this->createLossFunction(m_config.ceresLossFunctionForMapPoints), ceres::Ownership::TAKE_OWNERSHIP);
+        //m_lossFunctionWrappersForMapPoints.emplace_back(this->createLossFunction(m_config.ceresLossFunctionForMapPoints), ceres::Ownership::TAKE_OWNERSHIP);
+
+        auto lossFunctionWrapperPtr = new ceres::LossFunctionWrapper(this->createLossFunction(m_config.ceresLossFunctionForMapPoints), ceres::Ownership::TAKE_OWNERSHIP);
+
+        m_lossFunctionWrappersForMapPoints.emplace_back(lossFunctionWrapperPtr);
+
+        m_problem.AddResidualBlock(depthCostFunction, lossFunctionWrapperPtr, &m_depthMapDecimatedToOptimize.at<double>(row, col));
+
     }
 
     auto timeEndT = clock::now();
@@ -83,6 +124,15 @@ SolutionResult DepthMapOptimizationProblem::solve()
     options.num_threads = 24;
 
     ceres::Solver::Summary summary;
+    ceres::Solve(options, &m_problem, &summary);
+    std::cout << summary.FullReport() << "\n";
+
+    options.max_num_iterations = m_config.numberOfCeresIterationsSecondStep;
+    for (auto lossFunctionWrapperPtr : m_lossFunctionWrappersForMapPoints)
+    {
+        lossFunctionWrapperPtr->Reset(this->createLossFunction(m_config.ceresLossFunctionForMapPointsSecondStep), ceres::Ownership::TAKE_OWNERSHIP);
+    }
+
     ceres::Solve(options, &m_problem, &summary);
     std::cout << summary.FullReport() << "\n";
 
