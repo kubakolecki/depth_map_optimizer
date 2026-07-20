@@ -19,7 +19,7 @@ m_roiDecimated{config.roi.rowMin/config.scaleFactorForDepthMap, config.roi.rowMa
 }
 
 
-void DepthMapOptimizationProblem::fillOptimizationProblem(const std::vector<geometry_msgs::msg::Point32>& observedDepthMapPoints)
+void DepthMapOptimizationProblem::fillOptimizationProblem(const std::vector<geometry_msgs::msg::Point32>& observedDepthMapPoints, const std::vector<float>& uncertainty)
 {
     
     
@@ -30,17 +30,23 @@ void DepthMapOptimizationProblem::fillOptimizationProblem(const std::vector<geom
 
     const auto rowLimit {m_roiDecimated.rowMax - 1u};
     const auto colLimit {m_roiDecimated.colMax - 1u};
+    const cv::Mat uncertaintyMap {m_config.depthMapUncertaintyCoefficient*m_depthMapDecimatedToOptimize};
     for (auto row = m_roiDecimated.rowMin; row < rowLimit; ++row) 
     {
         double* rowPtr = m_depthMapDecimatedToOptimize.ptr<double>(row);
         double* rowPtrNext = m_depthMapDecimatedToOptimize.ptr<double>(row+1);
+        const double* rowPtrUncert = uncertaintyMap.ptr<double>(row);
+        const double* rowPtrNextUncert = uncertaintyMap.ptr<double>(row+1);
         for (auto col = m_roiDecimated.colMin; col < colLimit; ++col) 
         {
             const auto deltaDepthCol {rowPtr[col+1] - rowPtr[col] };
             const auto deltaDepthRow {rowPtrNext[col] - rowPtr[col] };
 
-            ceres::CostFunction* deltaDepthCostFunctionCol = new DeltaDepthCostFunction(deltaDepthCol, 0.1);
-            ceres::CostFunction* deltaDepthCostFunctionRow = new DeltaDepthCostFunction(deltaDepthRow, 0.1);
+            const auto deltaDepthColUncert {sqrt(rowPtrUncert[col+1]*rowPtrUncert[col+1] + rowPtrUncert[col]*rowPtrUncert[col])}; 
+            const auto deltaDepthRowUncert {sqrt(rowPtrNextUncert[col]*rowPtrNextUncert[col] + rowPtrUncert[col]*rowPtrUncert[col])};
+
+            ceres::CostFunction* deltaDepthCostFunctionCol = new DeltaDepthCostFunction(deltaDepthCol, deltaDepthColUncert);
+            ceres::CostFunction* deltaDepthCostFunctionRow = new DeltaDepthCostFunction(deltaDepthRow, deltaDepthRowUncert);
             ceres::LossFunction* deltaDepthLossFunctionCol = this->createLossFunction(m_config.ceresLossFunctionForDepthMap);
             ceres::LossFunction* deltaDepthLossFunctionRow = this->createLossFunction(m_config.ceresLossFunctionForDepthMap);
 
@@ -49,7 +55,7 @@ void DepthMapOptimizationProblem::fillOptimizationProblem(const std::vector<geom
         }
     }
 
-
+    size_t pointIndex{0};
     for (const auto& point: observedDepthMapPoints)
     {
         
@@ -84,7 +90,7 @@ void DepthMapOptimizationProblem::fillOptimizationProblem(const std::vector<geom
             continue;
         }
         
-        ceres::CostFunction* depthCostFunction = new DepthCostFunction(point.z, 0.05 * point.z);
+        ceres::CostFunction* depthCostFunction = new DepthCostFunction(point.z, uncertainty[pointIndex]);
         //ceres::LossFunction* lossFunction = this->createLossFunction(m_config.ceresLossFunctionForMapPoints);
         //auto lossFunctionWrapper =  std::make_shared<ceres::LossFunctionWrapper>(this->createLossFunction(m_config.ceresLossFunctionForMapPoints), ceres::Ownership::TAKE_OWNERSHIP);
         //m_lossFunctionWrappersForMapPoints.emplace_back(lossFunctionWrapper);
@@ -101,6 +107,7 @@ void DepthMapOptimizationProblem::fillOptimizationProblem(const std::vector<geom
         m_lossFunctionWrappersForMapPoints.emplace_back(lossFunctionWrapperPtr);
 
         m_problem.AddResidualBlock(depthCostFunction, lossFunctionWrapperPtr, &m_depthMapDecimatedToOptimize.at<double>(row, col));
+        ++pointIndex;
 
     }
 

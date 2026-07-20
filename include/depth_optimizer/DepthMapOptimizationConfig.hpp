@@ -19,6 +19,7 @@ namespace depth_map_optimization
         int numberOfCeresIterations{4};
         int numberOfCeresIterationsSecondStep{2};
         float mapPointDifferenceThreshold{0.5f};
+        double depthMapUncertaintyCoefficient{0.05f};
         LossFunctionDescription ceresLossFunctionForDepthMap{TrivialLoss{}};
         LossFunctionDescription ceresLossFunctionForMapPoints{TrivialLoss{}};
         LossFunctionDescription ceresLossFunctionForMapPointsSecondStep{TrivialLoss{}};

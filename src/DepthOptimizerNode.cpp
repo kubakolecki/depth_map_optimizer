@@ -32,6 +32,7 @@ DepthOptimizerNode::DepthOptimizerNode(): Node("depth_optimizer_node")
     auto paramNumberOfCeresIterationsSecondStepDescription{rcl_interfaces::msg::ParameterDescriptor{}};
 
     auto paramMapPointDifferenceThresholdDescription{rcl_interfaces::msg::ParameterDescriptor{}};
+    auto paramDepthMapUncertaintyCoefficientDescription{rcl_interfaces::msg::ParameterDescriptor{}};
 
     auto paramCeresLossFunctionDepthMapDescription{rcl_interfaces::msg::ParameterDescriptor{}};
     auto paramCeresLossFunctionDepthMapParameterDescription{rcl_interfaces::msg::ParameterDescriptor{}};
@@ -57,6 +58,7 @@ DepthOptimizerNode::DepthOptimizerNode(): Node("depth_optimizer_node")
     paramNumberOfCeresIterationsSecondStepDescription.description = "number of iterations for ceres optimization in the second step";
 
     paramMapPointDifferenceThresholdDescription.description = "if the difference between depth map and map point is greater than this threshold, the map point is not used for optimization";
+    paramDepthMapUncertaintyCoefficientDescription.description = "determaines how uncertain is depth map as a percentage of depth value, e.g. 0.05 means that the uncertainty is 5 percent of the depth value";
 
     paramCeresLossFunctionDepthMapDescription.description = "loss function for depth map optimization, possible values: TRIVIAL, CAUCHY, HUBER, TUKEY";
     paramCeresLossFunctionDepthMapParameterDescription.description = "parameter for the loss function for depth map optimization";
@@ -82,6 +84,7 @@ DepthOptimizerNode::DepthOptimizerNode(): Node("depth_optimizer_node")
     this->declare_parameter<int>("number_of_ceres_iterations_second_step",4, paramNumberOfCeresIterationsSecondStepDescription);
     
     this->declare_parameter<float>("map_point_difference_threshold", 0.5, paramMapPointDifferenceThresholdDescription);
+    this->declare_parameter<float>("depth_map_uncertainty_coefficient", 0.05, paramDepthMapUncertaintyCoefficientDescription);
 
     this->declare_parameter<std::string>("ceres_loss_function_depth_map","HUBER", paramCeresLossFunctionDepthMapDescription);
     this->declare_parameter<double>("ceres_loss_function_depth_map_parameter", 2.0, paramCeresLossFunctionDepthMapParameterDescription);
@@ -107,6 +110,7 @@ DepthOptimizerNode::DepthOptimizerNode(): Node("depth_optimizer_node")
     m_depthMapOptimizationConfig.numberOfCeresIterations = this->get_parameter("number_of_ceres_iterations").as_int();
     m_depthMapOptimizationConfig.numberOfCeresIterationsSecondStep = this->get_parameter("number_of_ceres_iterations_second_step").as_int();
     m_depthMapOptimizationConfig.mapPointDifferenceThreshold = this->get_parameter("map_point_difference_threshold").as_double();
+    m_depthMapOptimizationConfig.depthMapUncertaintyCoefficient = this->get_parameter("depth_map_uncertainty_coefficient").as_double();
     
     const auto nameOfLossFunctionDepthMap = this->get_parameter("ceres_loss_function_depth_map").as_string();
     const auto nameOfLossFunctionMapPoints = this->get_parameter("ceres_loss_function_map_points").as_string();
@@ -147,6 +151,8 @@ DepthOptimizerNode::DepthOptimizerNode(): Node("depth_optimizer_node")
         RCLCPP_WARN(this->get_logger(), "Directory pointed to save optimization reports in, does not exist. Creating directory...");
         std::filesystem::create_directories(m_pathOptimizationReports);
     }
+
+    objectLocalizationInfoPublisher = this->create_publisher<ros_common_messages::msg::ObjectLocalizationInfo>("object_localization_info", 10);
 
 }
 
@@ -277,6 +283,12 @@ void DepthOptimizerNode::imageBasedMappingDataCallback(const ros_common_messages
 
     if (m_doRunRigorousOptimization)
     {
+        if (msg->sparse_depth_information.points.size() != msg->sparse_depth_information.channels[0].values.size())
+        {
+            RCLCPP_ERROR(this->get_logger(), "The number of points in sparse depth information does not match the number of uncertainty values. Skipping optimization for this frame.");
+            return;
+        }
+
 
         m_depthMapOptimizationConfig.roi = depth_map_optimization::DepthMapOptimizationRoi{msg->depth_map_row_min, msg->depth_map_row_max, msg->depth_map_col_min, msg->depth_map_col_max};
         m_depthMapOptimizationConfig.scaleFactorForDepthMap = 4;
@@ -284,7 +296,7 @@ void DepthOptimizerNode::imageBasedMappingDataCallback(const ros_common_messages
         depth_map_optimization::DepthMapOptimizationProblem depthMapOptimizationProblem{depthMapToOptmize, 1.0, m_depthMapOptimizationConfig};
 
 
-        depthMapOptimizationProblem.fillOptimizationProblem(msg->sparse_depth_information.points);
+        depthMapOptimizationProblem.fillOptimizationProblem(msg->sparse_depth_information.points, msg->sparse_depth_information.channels[0].values);
         const auto optimizationResult{depthMapOptimizationProblem.solve()};
         
         depthMapToOptmize.convertTo(depthMapAfterOptmization, CV_32F);
@@ -319,8 +331,10 @@ void DepthOptimizerNode::imageBasedMappingDataCallback(const ros_common_messages
         RCLCPP_INFO(this->get_logger(), "Detected object %ld : %d", id, classId);
 
         const auto labelCentroid {computeLabelCentroid(imageSegmentedByObjectIds, id)};
-        const auto depthValueAtCentroid {depthMapAfterOptmization.at<float>(static_cast<int>(labelCentroid.y), static_cast<int>(labelCentroid.x))};
+        //const auto depthValueAtCentroid {depthMapAfterOptmization.at<float>(static_cast<int>(labelCentroid.y), static_cast<int>(labelCentroid.x))};
         //RCLCPP_INFO(this->get_logger(), "Centroid of classId %d: (%f, %f), depth value at centroid: %f", classId, labelCentroid.x, labelCentroid.y, depthValueAtCentroid);
+
+        const auto depthStatistics {computeObjectDepthStatistics(depthMapAfterOptmization, imageSegmentedByObjectIds, id)};
 
         cv::Vec3f rayToObject;
         rayToObject[0] = (labelCentroid.x - static_cast<float>(msg->columns)/2.0f + 0.5f) / msg->focal_length_left[0];
@@ -328,7 +342,24 @@ void DepthOptimizerNode::imageBasedMappingDataCallback(const ros_common_messages
         rayToObject[2] = 1.0f;
 
         rayToObject /= cv::norm(rayToObject);
-        RCLCPP_INFO(this->get_logger(), "Ray to object %d: (%f, %f, %f), depth: %f", classId, rayToObject[0], rayToObject[1], rayToObject[2], depthValueAtCentroid);
+        RCLCPP_INFO(this->get_logger(), "Ray to object %d: (%f, %f, %f), min depth: %f, max depth: %f, mean depth: %f", classId, rayToObject[0], rayToObject[1], rayToObject[2], depthStatistics.minDepth, depthStatistics.maxDepth, depthStatistics.meanDepth);
+
+
+        ros_common_messages::msg::ObjectLocalizationInfo objectLocalizationInfoMsg;
+        objectLocalizationInfoMsg.object_class_id = classId;
+
+        objectLocalizationInfoMsg.confidence_score = msg->confidence_scores[id];
+
+        objectLocalizationInfoMsg.bearing_vector_x = rayToObject[0];
+        objectLocalizationInfoMsg.bearing_vector_y = rayToObject[1];
+        objectLocalizationInfoMsg.bearing_vector_z = rayToObject[2];
+
+        objectLocalizationInfoMsg.min_depth = depthStatistics.minDepth;
+        objectLocalizationInfoMsg.max_depth = depthStatistics.maxDepth;
+        objectLocalizationInfoMsg.mean_depth = depthStatistics.meanDepth;
+
+
+        objectLocalizationInfoPublisher->publish(objectLocalizationInfoMsg);
 
     }
 
@@ -547,4 +578,35 @@ cv::Point2f DepthOptimizerNode::computeLabelCentroid(const cv::Mat& labels, uint
     return cv::Point2f(static_cast<float>(sumX) / static_cast<float>(count), static_cast<float>(sumY) / static_cast<float>(count));
 }
 
+ObjectDepthStatistics DepthOptimizerNode::computeObjectDepthStatistics(const cv::Mat& depthMap, const cv::Mat& labels, uint16_t label) const
+{
+    ObjectDepthStatistics stats;
+    std::vector<double> depths;
 
+    for (int y = 0; y < labels.rows; ++y)
+    {
+        const uint16_t* row = labels.ptr<uint16_t>(y);
+        const float* depthRow = depthMap.ptr<float>(y);
+
+        for (int x = 0; x < labels.cols; ++x)
+        {
+            if (row[x] == label)
+            {
+                depths.push_back(depthRow[x]);
+            }
+        }
+    }
+
+    if (depths.empty())
+    {
+        return stats;
+    }
+
+    std::sort(depths.begin(), depths.end());
+    stats.meanDepth = std::accumulate(depths.begin(), depths.end(), 0.0) / depths.size();
+    stats.medianDepth = (depths.size() % 2 == 0) ? (depths[depths.size() / 2 - 1] + depths[depths.size() / 2]) / 2.0 : depths[depths.size() / 2];
+    stats.minDepth = *std::min_element(depths.begin(), depths.end());
+    stats.maxDepth = *std::max_element(depths.begin(), depths.end());
+
+    return stats;
+}

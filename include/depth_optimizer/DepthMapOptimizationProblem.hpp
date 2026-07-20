@@ -29,7 +29,7 @@ class DepthMapOptimizationProblem
         using DepthResiduals = std::vector<DepthResidual>;
         
         explicit DepthMapOptimizationProblem(cv::Mat& depthMap,  double slope, const DepthMapOptimizationConfig& config);
-        void fillOptimizationProblem(const std::vector<geometry_msgs::msg::Point32>& observedDepthMapPoints);
+        void fillOptimizationProblem(const std::vector<geometry_msgs::msg::Point32>& observedDepthMapPoints, const std::vector<float>& uncertainty);
         SolutionResult solve();
         double getSlope() const { return m_slope; }
         DepthResiduals evaluateDepthResiduals(const std::vector<geometry_msgs::msg::Point32>& observedDepthMapPoints) const;

@@ -20,6 +20,7 @@ def generate_launch_description():
                         {'regression_outlier_threshold': 0.2},
                         {'regression_outlier_probability': 0.5},
                         {'map_point_difference_threshold': 0.4},
+                        {'depth_map_uncertainty_coefficient': 0.05},
                         {'ceres_loss_function_depth_map': 'CAUCHY'}, #TRIVIAL, HUBER, CAUCHY,TUKEY
                         {'ceres_loss_function_depth_map_parameter': 3.0},
                         {'ceres_loss_function_map_points': 'CAUCHY'}, #TRIVIAL, HUBER, CAUCHY,TUKEY
@@ -28,8 +29,8 @@ def generate_launch_description():
                         {'ceres_loss_function_map_points_second_step_parameter': 1.0},
                         {'do_save_depth_maps_to_files': False},
                         {'do_save_optimization_reports_to_files': False},
-                        {'path_to_depthmap_directory': '/datadisk/data/agh_projects/20260407_depth_map_datasets/depth_maps/2026_04_07-14_05_46' },
-                        {'path_to_optimization_reports_directory': '/datadisk/data/agh_projects/20260407_depth_map_datasets/depth_maps/2026_04_07-14_05_46' },
+                        {'path_to_depthmap_directory': '/datadisk/data/agh_projects/20260407_depth_map_datasets/depth_maps/2026_04_07-14_27_44' },
+                        {'path_to_optimization_reports_directory': '/datadisk/data/agh_projects/20260407_depth_map_datasets/depth_maps/2026_04_07-14_27_44' },
                         ],
             emulate_tty=True
         )
