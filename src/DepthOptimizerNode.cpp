@@ -33,6 +33,7 @@ DepthOptimizerNode::DepthOptimizerNode(): Node("depth_optimizer_node")
 
     auto paramMapPointDifferenceThresholdDescription{rcl_interfaces::msg::ParameterDescriptor{}};
     auto paramDepthMapUncertaintyCoefficientDescription{rcl_interfaces::msg::ParameterDescriptor{}};
+    auto paramDepthMapScaleFactorDescription{rcl_interfaces::msg::ParameterDescriptor{}};
 
     auto paramCeresLossFunctionDepthMapDescription{rcl_interfaces::msg::ParameterDescriptor{}};
     auto paramCeresLossFunctionDepthMapParameterDescription{rcl_interfaces::msg::ParameterDescriptor{}};
@@ -59,6 +60,7 @@ DepthOptimizerNode::DepthOptimizerNode(): Node("depth_optimizer_node")
 
     paramMapPointDifferenceThresholdDescription.description = "if the difference between depth map and map point is greater than this threshold, the map point is not used for optimization";
     paramDepthMapUncertaintyCoefficientDescription.description = "determaines how uncertain is depth map as a percentage of depth value, e.g. 0.05 means that the uncertainty is 5 percent of the depth value";
+    paramDepthMapScaleFactorDescription.description = "deteremines the downsampling factor for depth map, applied before optimization - the value has to be integer, like 2, 4, 8";
 
     paramCeresLossFunctionDepthMapDescription.description = "loss function for depth map optimization, possible values: TRIVIAL, CAUCHY, HUBER, TUKEY";
     paramCeresLossFunctionDepthMapParameterDescription.description = "parameter for the loss function for depth map optimization";
@@ -85,6 +87,7 @@ DepthOptimizerNode::DepthOptimizerNode(): Node("depth_optimizer_node")
     
     this->declare_parameter<float>("map_point_difference_threshold", 0.5, paramMapPointDifferenceThresholdDescription);
     this->declare_parameter<float>("depth_map_uncertainty_coefficient", 0.05, paramDepthMapUncertaintyCoefficientDescription);
+    this->declare_parameter<int>("depth_map_scale_factor", 4, paramDepthMapScaleFactorDescription);
 
     this->declare_parameter<std::string>("ceres_loss_function_depth_map","HUBER", paramCeresLossFunctionDepthMapDescription);
     this->declare_parameter<double>("ceres_loss_function_depth_map_parameter", 2.0, paramCeresLossFunctionDepthMapParameterDescription);
@@ -111,6 +114,7 @@ DepthOptimizerNode::DepthOptimizerNode(): Node("depth_optimizer_node")
     m_depthMapOptimizationConfig.numberOfCeresIterationsSecondStep = this->get_parameter("number_of_ceres_iterations_second_step").as_int();
     m_depthMapOptimizationConfig.mapPointDifferenceThreshold = this->get_parameter("map_point_difference_threshold").as_double();
     m_depthMapOptimizationConfig.depthMapUncertaintyCoefficient = this->get_parameter("depth_map_uncertainty_coefficient").as_double();
+    m_depthMapOptimizationConfig.scaleFactorForDepthMap = this->get_parameter("depth_map_scale_factor").as_int();
     
     const auto nameOfLossFunctionDepthMap = this->get_parameter("ceres_loss_function_depth_map").as_string();
     const auto nameOfLossFunctionMapPoints = this->get_parameter("ceres_loss_function_map_points").as_string();
@@ -291,7 +295,7 @@ void DepthOptimizerNode::imageBasedMappingDataCallback(const ros_common_messages
 
 
         m_depthMapOptimizationConfig.roi = depth_map_optimization::DepthMapOptimizationRoi{msg->depth_map_row_min, msg->depth_map_row_max, msg->depth_map_col_min, msg->depth_map_col_max};
-        m_depthMapOptimizationConfig.scaleFactorForDepthMap = 4;
+        
         
         depth_map_optimization::DepthMapOptimizationProblem depthMapOptimizationProblem{depthMapToOptmize, 1.0, m_depthMapOptimizationConfig};
 

@@ -86,7 +86,7 @@ void DepthMapOptimizationProblem::fillOptimizationProblem(const std::vector<geom
         const auto depthDifference = std::abs(depthAtPoint - point.z);
         if (depthDifference > m_config.mapPointDifferenceThreshold)
         {
-            std::cout << "Skipping point at (" << point.x << ", " << point.y << ") with depth " << point.z << " because the difference with the depth map value " << depthAtPoint << " is too large: " << depthDifference << std::endl; 
+            //std::cout << "Skipping point at (" << point.x << ", " << point.y << ") with depth " << point.z << " because the difference with the depth map value " << depthAtPoint << " is too large: " << depthDifference << std::endl; 
             continue;
         }
         
@@ -132,7 +132,8 @@ SolutionResult DepthMapOptimizationProblem::solve()
 
     ceres::Solver::Summary summary;
     ceres::Solve(options, &m_problem, &summary);
-    std::cout << summary.FullReport() << "\n";
+    const auto fullReportStep1{summary.FullReport()};
+    //std::cout << summary.FullReport() << "\n";
 
     options.max_num_iterations = m_config.numberOfCeresIterationsSecondStep;
     for (auto lossFunctionWrapperPtr : m_lossFunctionWrappersForMapPoints)
@@ -141,7 +142,8 @@ SolutionResult DepthMapOptimizationProblem::solve()
     }
 
     ceres::Solve(options, &m_problem, &summary);
-    std::cout << summary.FullReport() << "\n";
+    const auto fullReportStep2{summary.FullReport()};
+    //std::cout << summary.FullReport() << "\n";
 
     auto timeEndT = clock::now();
     auto durationT = std::chrono::duration_cast<std::chrono::microseconds>(timeEndT - timeStartT).count();
@@ -155,7 +157,7 @@ SolutionResult DepthMapOptimizationProblem::solve()
     const double sigmaZero {std::sqrt(2.0 * summary.final_cost / (summary.num_residuals - summary.num_effective_parameters))};
     const auto isSolutionUsable{summary.IsSolutionUsable()};
 
-    return {sigmaZero, isSolutionUsable, summary.FullReport()};
+    return {sigmaZero, isSolutionUsable, fullReportStep1, fullReportStep2};
 }
 
 ceres::LossFunction* DepthMapOptimizationProblem::createLossFunction(const LossFunctionDescription& lossFunctionDescription) const

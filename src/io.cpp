@@ -30,7 +30,9 @@ void depth_optmizer_io::sendToStream(std::ostream &outputStream, const depth_map
     
     outputStream << "Is solution usable: " << (solutionResult.isSolutionUsable ? "Yes" : "No") << "\n";
     outputStream << "Sigma zero: " << solutionResult.sigmaZero << "\n";
-    outputStream << "Ceres Solver report:\n";
-    outputStream << solutionResult.solverReport << "\n";
+    outputStream << "Ceres Solver report - step 1:\n";
+    outputStream << solutionResult.solverReportStep1 << "\n";
+    outputStream << "Ceres Solver report - step 2:\n";
+    outputStream << solutionResult.solverReportStep2 << "\n";
 
 }

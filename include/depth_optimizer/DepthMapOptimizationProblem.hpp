@@ -19,7 +19,8 @@ struct SolutionResult
 {
     double sigmaZero{1.0};
     bool isSolutionUsable{true};
-    std::string solverReport{};
+    std::string solverReportStep1{};
+    std::string solverReportStep2{};
 };
 
 class DepthMapOptimizationProblem
