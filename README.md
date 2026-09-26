@@ -15,9 +15,11 @@ Ceres Solver has to be built with Suit Sparse to enable Sparse Cholesky decompos
 We used GCC compiler with g++ version 14.3 to support C++23
 
 ## Requirements
-You need to have rather powerful PC to be able to run the fusion in the real-time (or almost in real-time). In the future we may try to use conjugate gradient approach on GPU that
+You need to have rather powerful PC to be able to run the full fusion in the real-time (or almost in real-time). In the future we may try to use conjugate gradient approach on GPU that
 may provide some time performance boost. We tested this package on laptop with Intel(R) Core(TM) i9-14900HX CPU and 64GB RAM. Typically we achieved fusion runtime about 0.5 s. 
-The `'depth_map_scale_factor'` parameter, you can set via launchfiles, impact runtime a lot (the higher the shorter runtime and worse accuracy).
+The `'depth_map_scale_factor'` parameter, you can set via launchfiles, impact runtime a lot (the higher the shorter runtime and worse accuracy). If you set `'do_run_rigorous_optimization'` to `False` then
+only the linear depth map correction is applied. It is very fast (like less than 1 ms to few ms) but provides worse accuracy than rigorous optimization. Still this one can be sufficient for your applications
+so if you prioritize runtime over accuracy you can always stop computations after linear correction.
 
 ## Building
 
