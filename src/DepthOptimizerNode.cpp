@@ -22,6 +22,8 @@
 #include <fstream> //TODO remove this after debugging
 #include <sstream>
 
+using namespace std::string_literals;
+
 DepthOptimizerNode::DepthOptimizerNode(): Node("depth_optimizer_node")
 {
     auto paramMappingDataTopicNameDescription{rcl_interfaces::msg::ParameterDescriptor{}};
@@ -34,6 +36,8 @@ DepthOptimizerNode::DepthOptimizerNode(): Node("depth_optimizer_node")
     auto paramMapPointDifferenceThresholdDescription{rcl_interfaces::msg::ParameterDescriptor{}};
     auto paramDepthMapUncertaintyCoefficientDescription{rcl_interfaces::msg::ParameterDescriptor{}};
     auto paramDepthMapScaleFactorDescription{rcl_interfaces::msg::ParameterDescriptor{}};
+
+    auto paramOptmizationApproachDescription{rcl_interfaces::msg::ParameterDescriptor{}};
 
     auto paramCeresLossFunctionDepthMapDescription{rcl_interfaces::msg::ParameterDescriptor{}};
     auto paramCeresLossFunctionDepthMapParameterDescription{rcl_interfaces::msg::ParameterDescriptor{}};
@@ -62,6 +66,8 @@ DepthOptimizerNode::DepthOptimizerNode(): Node("depth_optimizer_node")
     paramDepthMapUncertaintyCoefficientDescription.description = "determaines how uncertain is depth map as a percentage of depth value, e.g. 0.05 means that the uncertainty is 5 percent of the depth value";
     paramDepthMapScaleFactorDescription.description = "deteremines the downsampling factor for depth map, applied before optimization - the value has to be integer, like 2, 4, 8";
 
+    paramOptmizationApproachDescription.description = "determines which cost functors are used to build the optimization problem";
+
     paramCeresLossFunctionDepthMapDescription.description = "loss function for depth map optimization, possible values: TRIVIAL, CAUCHY, HUBER, TUKEY";
     paramCeresLossFunctionDepthMapParameterDescription.description = "parameter for the loss function for depth map optimization";
     paramCeresLossFunctionMapPointsDescription.description = "loss function for map points optimization, possible values: TRIVIAL, CAUCHY, HUBER, TUKEY";
@@ -88,6 +94,8 @@ DepthOptimizerNode::DepthOptimizerNode(): Node("depth_optimizer_node")
     this->declare_parameter<float>("map_point_difference_threshold", 0.5, paramMapPointDifferenceThresholdDescription);
     this->declare_parameter<float>("depth_map_uncertainty_coefficient", 0.05, paramDepthMapUncertaintyCoefficientDescription);
     this->declare_parameter<int>("depth_map_scale_factor", 4, paramDepthMapScaleFactorDescription);
+
+    this->declare_parameter<std::string>("optimization_approach", "WITH_SCALE_ESTIMATION", paramOptmizationApproachDescription);
 
     this->declare_parameter<std::string>("ceres_loss_function_depth_map","HUBER", paramCeresLossFunctionDepthMapDescription);
     this->declare_parameter<double>("ceres_loss_function_depth_map_parameter", 2.0, paramCeresLossFunctionDepthMapParameterDescription);
@@ -143,6 +151,16 @@ DepthOptimizerNode::DepthOptimizerNode(): Node("depth_optimizer_node")
     m_doSaveOptimizationReports = this->get_parameter("do_save_optimization_reports_to_files").as_bool();
     m_pathDepthMaps = std::filesystem::path{this->get_parameter("path_to_depthmap_directory").as_string()};
     m_pathOptimizationReports = std::filesystem::path{this->get_parameter("path_to_optimization_reports_directory").as_string()};
+
+    const auto optimizationApproach{this->get_parameter("optimization_approach").as_string()};
+    if (optimizationApproach == "WITH_SCALE_ESTIMATION"s)
+    {
+        m_depthMapOptimizationConfig.optimizationApproach = depth_map_optimization::OptimizationApproach::WITH_SCALE_ESTIMATION;
+    }
+    if (optimizationApproach == "WITHOUT_SCALE_ESTIMATION"s)
+    {
+        m_depthMapOptimizationConfig.optimizationApproach = depth_map_optimization::OptimizationApproach::WITHOUT_SCALE_ESTIMATION;
+    }
 
     if (m_doSaveDepthMaps && !std::filesystem::exists(m_pathDepthMaps))
     {
@@ -210,7 +228,7 @@ void DepthOptimizerNode::imageBasedMappingDataCallback(const ros_common_messages
         return point.x >= msg->depth_map_col_min && point.x < msg->depth_map_col_max && point.y >= msg->depth_map_row_min && point.y < msg->depth_map_row_max;
     };
 
-    auto timeStartT = clock::now();
+    //auto timeStartT = clock::now();
 
     auto coordinatesX = msg->sparse_depth_information.points | std::views::filter(isInValidRange) | std::views::transform([](const auto& point){return point.x;}) | std::ranges::to<std::vector<float>>();
     auto coordinatesY = msg->sparse_depth_information.points | std::views::filter(isInValidRange) | std::views::transform([](const auto& point){return point.y;}) | std::ranges::to<std::vector<float>>();
@@ -218,9 +236,9 @@ void DepthOptimizerNode::imageBasedMappingDataCallback(const ros_common_messages
 
     const auto numberOfValidMapPoints{depthValuesFromSparseMap.size()};
 
-    auto timeEndT = clock::now();
-    auto durationT = std::chrono::duration_cast<std::chrono::microseconds>(timeEndT - timeStartT).count();
-    RCLCPP_INFO(this->get_logger(), "Transformed sparse depth information points in %ld microseconds", durationT);
+    //auto timeEndT = clock::now();
+    //auto durationT = std::chrono::duration_cast<std::chrono::microseconds>(timeEndT - timeStartT).count();
+    //RCLCPP_INFO(this->get_logger(), "Transformed sparse depth information points in %ld microseconds", durationT);
 
     cv::Mat depthMap(msg->rows, msg->columns, CV_32FC1, msg->depth_map_left_row_major.data());
 
@@ -229,11 +247,11 @@ void DepthOptimizerNode::imageBasedMappingDataCallback(const ros_common_messages
     std::vector<float> depthValuesFromDepthMap(numberOfValidMapPoints,0.0f);
     cv::Mat depthValuesWrapper(1, numberOfValidMapPoints, CV_32FC1, depthValuesFromDepthMap.data());
 
-    auto timeStartRemap = clock::now();
+    //auto timeStartRemap = clock::now();
     cv::remap(depthMap, depthValuesWrapper, mapX, mapY, cv::INTER_NEAREST, cv::BORDER_CONSTANT, 0.0f);
-    auto timeEndRemap = clock::now();
-    auto durationRemap = std::chrono::duration_cast<std::chrono::microseconds>(timeEndRemap - timeStartRemap).count();
-    RCLCPP_INFO(this->get_logger(), "Retrieved depth values from depth map in %ld microseconds", durationRemap);
+    //auto timeEndRemap = clock::now();
+    //auto durationRemap = std::chrono::duration_cast<std::chrono::microseconds>(timeEndRemap - timeStartRemap).count();
+    //RCLCPP_INFO(this->get_logger(), "Retrieved depth values from depth map in %ld microseconds", durationRemap);
 
     //std::for_each(depthValuesFromDepthMap.begin(), depthValuesFromDepthMap.end(), [](const auto& depthValue){
     //    RCLCPP_INFO(rclcpp::get_logger("DepthOptimizerNode"), "Depth value: %f", depthValue);
@@ -254,10 +272,8 @@ void DepthOptimizerNode::imageBasedMappingDataCallback(const ros_common_messages
         return;
     }
 
-    RCLCPP_INFO(this->get_logger(), "Completed robust linear regression fitting.");
-    RCLCPP_INFO(this->get_logger(), "Inlier ratio: %f, Number of inliers: %d, Slope: %f, Intercept: %f, RMSE: %f", 
+    RCLCPP_INFO(this->get_logger(), "\033[34mInlier ratio: %f, Slope: %f, Intercept: %f, RMSE: %f\033[0m", 
         regressionResult.value().inlierRatio,
-        regressionResult.value().numberOfInliers,
         regressionResult.value().slope,
         regressionResult.value().intercept,
         regressionResult.value().rmse
@@ -296,21 +312,21 @@ void DepthOptimizerNode::imageBasedMappingDataCallback(const ros_common_messages
 
         m_depthMapOptimizationConfig.roi = depth_map_optimization::DepthMapOptimizationRoi{msg->depth_map_row_min, msg->depth_map_row_max, msg->depth_map_col_min, msg->depth_map_col_max};
         
-        
-        depth_map_optimization::DepthMapOptimizationProblem depthMapOptimizationProblem{depthMapToOptmize, 1.0, m_depthMapOptimizationConfig};
-
-
+        auto timeStartProblemSolving = clock::now();
+        depth_map_optimization::DepthMapOptimizationProblem depthMapOptimizationProblem{depthMapToOptmize, 1.0, m_depthMapOptimizationConfig};  
         depthMapOptimizationProblem.fillOptimizationProblem(msg->sparse_depth_information.points, msg->sparse_depth_information.channels[0].values);
         const auto optimizationResult{depthMapOptimizationProblem.solve()};
-        
+        auto timeEndProblemSolving = clock::now();
+        RCLCPP_INFO(this->get_logger(), "\033[34mOptimization problem solved in %ld milliseconds\033[0m", std::chrono::duration_cast<std::chrono::milliseconds>(timeEndProblemSolving - timeStartProblemSolving).count());
+
         depthMapToOptmize.convertTo(depthMapAfterOptmization, CV_32F);
+
 
         if (m_doSaveDepthMaps)
         {
             cv::imwrite((m_pathDepthMaps / ("depth_map_optimized_" + stampToString(msg->pose.header.stamp) + ".tif")).string(), depthMapAfterOptmization);
         }
 
-        RCLCPP_INFO(this->get_logger(), "Slope after optimization: %f", 1.0/depthMapOptimizationProblem.getSlope());
 
         const auto depthResiduals{depthMapOptimizationProblem.evaluateDepthResiduals(msg->sparse_depth_information.points)};
 

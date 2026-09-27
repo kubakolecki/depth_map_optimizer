@@ -21,16 +21,13 @@ class DeltaDepthCostFunction : public ceres::SizedCostFunction<1,1,1,1>
             {
                 jacobian[0][0] = -parameters[2][0]/m_deltaDepthUncertainty; //derivative w.r.t depth_ij
                 jacobian[1][0] = parameters[2][0]/m_deltaDepthUncertainty; //derivative w.r.t depth_kl
-                jacobian[2][0] = (parameters[1][0] - parameters[0][0])/m_deltaDepthUncertainty; //derivative w.r.t regression_slope
+                jacobian[2][0] = (parameters[1][0] - parameters[0][0])/m_deltaDepthUncertainty; //derivative w.r.t regression_slope (scale)
             }
 
             return true;
         }
 
-
     private:
         double m_deltaDepth;
         double m_deltaDepthUncertainty;
-
-
 };

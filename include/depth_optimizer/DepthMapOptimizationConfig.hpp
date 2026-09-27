@@ -5,6 +5,14 @@
 
 namespace depth_map_optimization
 {
+
+    enum class OptimizationApproach
+    {
+        WITH_SCALE_ESTIMATION,
+        WITHOUT_SCALE_ESTIMATION
+    };
+    
+    
     struct DepthMapOptimizationRoi
     {
         unsigned int rowMin;
@@ -25,6 +33,6 @@ namespace depth_map_optimization
         LossFunctionDescription ceresLossFunctionForMapPointsSecondStep{TrivialLoss{}};
         int scaleFactorForDepthMap{1};
         DepthMapOptimizationRoi roi{0,0,0,0};
-
+        OptimizationApproach optimizationApproach;
     };
 }

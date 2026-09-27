@@ -1,5 +1,6 @@
 #include "depth_optimizer/DepthMapOptimizationProblem.hpp"
 #include "depth_optimizer/DeltaDepthCostFunction.hpp"
+#include "depth_optimizer/DeltaDepthNoScaleCostFunction.hpp"
 #include "depth_optimizer/DepthCostFunction.hpp"
 
 #include <iostream>
@@ -26,34 +27,69 @@ void DepthMapOptimizationProblem::fillOptimizationProblem(const std::vector<geom
     using clock = std::chrono::high_resolution_clock;
     auto timeStartT = clock::now();
     m_lossFunctionWrappersForMapPoints.clear();
-    //m_lossFunctionWrappersForMapPoints.reserve(observedDepthMapPoints.size());
+
 
     const auto rowLimit {m_roiDecimated.rowMax - 1u};
     const auto colLimit {m_roiDecimated.colMax - 1u};
     const cv::Mat uncertaintyMap {m_config.depthMapUncertaintyCoefficient*m_depthMapDecimatedToOptimize};
-    for (auto row = m_roiDecimated.rowMin; row < rowLimit; ++row) 
+    //TODO: consider making creation of cost and loss function parallell - however inserting to problem must be single threaded(?)
+
+    if (m_config.optimizationApproach == OptimizationApproach::WITH_SCALE_ESTIMATION)
     {
-        double* rowPtr = m_depthMapDecimatedToOptimize.ptr<double>(row);
-        double* rowPtrNext = m_depthMapDecimatedToOptimize.ptr<double>(row+1);
-        const double* rowPtrUncert = uncertaintyMap.ptr<double>(row);
-        const double* rowPtrNextUncert = uncertaintyMap.ptr<double>(row+1);
-        for (auto col = m_roiDecimated.colMin; col < colLimit; ++col) 
+        std::cout <<"solving problem with scale estimation" <<std::endl;
+        for (auto row = m_roiDecimated.rowMin; row < rowLimit; ++row) 
         {
-            const auto deltaDepthCol {rowPtr[col+1] - rowPtr[col] };
-            const auto deltaDepthRow {rowPtrNext[col] - rowPtr[col] };
+            double* rowPtr = m_depthMapDecimatedToOptimize.ptr<double>(row);
+            double* rowPtrNext = m_depthMapDecimatedToOptimize.ptr<double>(row+1);
+            const double* rowPtrUncert = uncertaintyMap.ptr<double>(row);
+            const double* rowPtrNextUncert = uncertaintyMap.ptr<double>(row+1);
+            for (auto col = m_roiDecimated.colMin; col < colLimit; ++col) 
+            {
+                const auto deltaDepthCol {rowPtr[col+1] - rowPtr[col] };
+                const auto deltaDepthRow {rowPtrNext[col] - rowPtr[col] };
 
-            const auto deltaDepthColUncert {sqrt(rowPtrUncert[col+1]*rowPtrUncert[col+1] + rowPtrUncert[col]*rowPtrUncert[col])}; 
-            const auto deltaDepthRowUncert {sqrt(rowPtrNextUncert[col]*rowPtrNextUncert[col] + rowPtrUncert[col]*rowPtrUncert[col])};
+                const auto deltaDepthColUncert {sqrt(rowPtrUncert[col+1]*rowPtrUncert[col+1] + rowPtrUncert[col]*rowPtrUncert[col])}; 
+                const auto deltaDepthRowUncert {sqrt(rowPtrNextUncert[col]*rowPtrNextUncert[col] + rowPtrUncert[col]*rowPtrUncert[col])};
 
-            ceres::CostFunction* deltaDepthCostFunctionCol = new DeltaDepthCostFunction(deltaDepthCol, deltaDepthColUncert);
-            ceres::CostFunction* deltaDepthCostFunctionRow = new DeltaDepthCostFunction(deltaDepthRow, deltaDepthRowUncert);
-            ceres::LossFunction* deltaDepthLossFunctionCol = this->createLossFunction(m_config.ceresLossFunctionForDepthMap);
-            ceres::LossFunction* deltaDepthLossFunctionRow = this->createLossFunction(m_config.ceresLossFunctionForDepthMap);
+                ceres::CostFunction* deltaDepthCostFunctionCol = new DeltaDepthCostFunction(deltaDepthCol, deltaDepthColUncert);
+                ceres::CostFunction* deltaDepthCostFunctionRow = new DeltaDepthCostFunction(deltaDepthRow, deltaDepthRowUncert);
+                ceres::LossFunction* deltaDepthLossFunctionCol = this->createLossFunction(m_config.ceresLossFunctionForDepthMap);
+                ceres::LossFunction* deltaDepthLossFunctionRow = this->createLossFunction(m_config.ceresLossFunctionForDepthMap);
 
-            m_problem.AddResidualBlock(deltaDepthCostFunctionCol, deltaDepthLossFunctionCol, &rowPtr[col], &rowPtr[col+1], &m_slope);
-            m_problem.AddResidualBlock(deltaDepthCostFunctionRow, deltaDepthLossFunctionRow, &rowPtr[col], &rowPtrNext[col], &m_slope);
+                m_problem.AddResidualBlock(deltaDepthCostFunctionCol, deltaDepthLossFunctionCol, &rowPtr[col], &rowPtr[col+1], &m_slope);
+                m_problem.AddResidualBlock(deltaDepthCostFunctionRow, deltaDepthLossFunctionRow, &rowPtr[col], &rowPtrNext[col], &m_slope);
+            }
         }
     }
+
+    if (m_config.optimizationApproach == OptimizationApproach::WITHOUT_SCALE_ESTIMATION)
+    {
+        std::cout <<"solving problem without scale estimation" <<std::endl;
+        for (auto row = m_roiDecimated.rowMin; row < rowLimit; ++row) 
+        {
+            double* rowPtr = m_depthMapDecimatedToOptimize.ptr<double>(row);
+            double* rowPtrNext = m_depthMapDecimatedToOptimize.ptr<double>(row+1);
+            const double* rowPtrUncert = uncertaintyMap.ptr<double>(row);
+            const double* rowPtrNextUncert = uncertaintyMap.ptr<double>(row+1);
+            for (auto col = m_roiDecimated.colMin; col < colLimit; ++col) 
+            {
+                const auto deltaDepthCol {rowPtr[col+1] - rowPtr[col] };
+                const auto deltaDepthRow {rowPtrNext[col] - rowPtr[col] };
+
+                const auto deltaDepthColUncert {sqrt(rowPtrUncert[col+1]*rowPtrUncert[col+1] + rowPtrUncert[col]*rowPtrUncert[col])}; 
+                const auto deltaDepthRowUncert {sqrt(rowPtrNextUncert[col]*rowPtrNextUncert[col] + rowPtrUncert[col]*rowPtrUncert[col])};
+
+                ceres::CostFunction* deltaDepthCostFunctionCol = new DeltaDepthNoScaleCostFunction(deltaDepthCol, deltaDepthColUncert);
+                ceres::CostFunction* deltaDepthCostFunctionRow = new DeltaDepthNoScaleCostFunction(deltaDepthRow, deltaDepthRowUncert);
+                ceres::LossFunction* deltaDepthLossFunctionCol = this->createLossFunction(m_config.ceresLossFunctionForDepthMap);
+                ceres::LossFunction* deltaDepthLossFunctionRow = this->createLossFunction(m_config.ceresLossFunctionForDepthMap);
+
+                m_problem.AddResidualBlock(deltaDepthCostFunctionCol, deltaDepthLossFunctionCol, &rowPtr[col], &rowPtr[col+1]);
+                m_problem.AddResidualBlock(deltaDepthCostFunctionRow, deltaDepthLossFunctionRow, &rowPtr[col], &rowPtrNext[col]);
+            }
+        }
+    }
+    
 
     size_t pointIndex{0};
     for (const auto& point: observedDepthMapPoints)
@@ -91,16 +127,7 @@ void DepthMapOptimizationProblem::fillOptimizationProblem(const std::vector<geom
         }
         
         ceres::CostFunction* depthCostFunction = new DepthCostFunction(point.z, uncertainty[pointIndex]);
-        //ceres::LossFunction* lossFunction = this->createLossFunction(m_config.ceresLossFunctionForMapPoints);
-        //auto lossFunctionWrapper =  std::make_shared<ceres::LossFunctionWrapper>(this->createLossFunction(m_config.ceresLossFunctionForMapPoints), ceres::Ownership::TAKE_OWNERSHIP);
-        //m_lossFunctionWrappersForMapPoints.emplace_back(lossFunctionWrapper);
 
-        //m_problem.AddResidualBlock(depthCostFunction, lossFunction, &m_depthMapDecimatedToOptimize.at<double>(row, col));
-
-        //m_problem.AddResidualBlock(depthCostFunction, lossFunctionWrapper.get(), &m_depthMapDecimatedToOptimize.at<double>(row, col));
-
-        //auto lossFncWrapper = ceres::LossFunctionWrapper(this->createLossFunction(m_config.ceresLossFunctionForMapPoints), ceres::Ownership::TAKE_OWNERSHIP);
-        //m_lossFunctionWrappersForMapPoints.emplace_back(this->createLossFunction(m_config.ceresLossFunctionForMapPoints), ceres::Ownership::TAKE_OWNERSHIP);
 
         auto lossFunctionWrapperPtr = new ceres::LossFunctionWrapper(this->createLossFunction(m_config.ceresLossFunctionForMapPoints), ceres::Ownership::TAKE_OWNERSHIP);
 
@@ -120,15 +147,19 @@ void DepthMapOptimizationProblem::fillOptimizationProblem(const std::vector<geom
 
 SolutionResult DepthMapOptimizationProblem::solve()
 {
-    using clock = std::chrono::high_resolution_clock;
-    auto timeStartT = clock::now();
+    //using clock = std::chrono::high_resolution_clock;
+    //auto timeStartT = clock::now();
     ceres::Solver::Options options;
+    //options.sparse_linear_algebra_library_type = ceres::ACCELERATE_SPARSE;
     options.sparse_linear_algebra_library_type = ceres::SUITE_SPARSE;
     options.linear_solver_type = ceres::SPARSE_NORMAL_CHOLESKY;
+    //options.linear_solver_type = ceres::SPARSE_SCHUR;
     //options.linear_solver_type = ceres::CGNR;
     options.minimizer_progress_to_stdout = false;
+    options.use_mixed_precision_solves = false;
     options.max_num_iterations = m_config.numberOfCeresIterations;
-    options.num_threads = 24;
+    options.update_state_every_iteration = false;
+    options.num_threads = 32;
 
     ceres::Solver::Summary summary;
     ceres::Solve(options, &m_problem, &summary);
@@ -145,9 +176,9 @@ SolutionResult DepthMapOptimizationProblem::solve()
     const auto fullReportStep2{summary.FullReport()};
     //std::cout << summary.FullReport() << "\n";
 
-    auto timeEndT = clock::now();
-    auto durationT = std::chrono::duration_cast<std::chrono::microseconds>(timeEndT - timeStartT).count();
-    std::cout << "Solved optimization problem in " << durationT << " microseconds." << std::endl;
+    //auto timeEndT = clock::now();
+    //auto durationT = std::chrono::duration_cast<std::chrono::microseconds>(timeEndT - timeStartT).count();
+    //std::cout << "Solved optimization problem in " << durationT << " microseconds." << std::endl;
 
     cv::Mat mapOfCorrections = m_depthMapDecimatedToOptimize - m_depthMapDecimatedOriginal;
     cv::Mat mapCorrectionsUpscaled;
