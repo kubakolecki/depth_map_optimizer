@@ -1,6 +1,7 @@
 # Depth Map Optimizer
 Depth Map Optimizer is a ROS2 package used in NEU-DEPTH project. This package implements sparse map and neural depth map fusion using
-least square optimization. In the typical usage scenario, sparse depth comes from visual (or visual-inertial) SLAM.
+least square optimization. In the typical usage scenario, sparse depth comes from visual (or visual-inertial) SLAM. We provide also the ROS2 package
+that computes depth maps using provided deep learned models: [slam_deep_mapper](https://github.com/kubakolecki/slam_deep_mapper).
 
 ## Dependencies
 This package was tested in Linux with ROS2 Jazzy. Depth Map Optimizer depends on some [messages](https://github.com/kubakolecki/ros_common_messages) that are defined
